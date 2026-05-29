@@ -177,6 +177,9 @@ def _maybe_migrate_legacy_gateway_run_state(
     if state_file.exists():
         return None
 
+    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+        return None
+
     argv = tuple(container_argv) if container_argv is not None else _read_container_argv()
     if not _is_legacy_gateway_run_request(argv):
         return None
@@ -209,6 +212,8 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
         args = args[1:]
     if args and Path(args[0]).name == "hermes":
         args = args[1:]
+    if "--no-supervise" in args:
+        return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
