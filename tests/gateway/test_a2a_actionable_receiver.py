@@ -91,6 +91,57 @@ def test_handoff_acks_and_finalizes_without_work_started_noise():
     assert store.completed[0]["status"] == "completed"
 
 
+def test_question_packets_are_actionable_without_work_started_noise():
+    store = FakeA2AStore(_message("question"))
+
+    result = process_actionable_once(
+        store=store,
+        target="pons",
+        consumer="worker-1",
+        handlers={"question": lambda message: {"message_type": "answer", "body": "yes"}},
+    )
+
+    assert result["ack"]["message_type"] == "ack"
+    assert result["started"] is None
+    assert result["reply"]["message_type"] == "answer"
+    assert [packet["message_type"] for packet in store.enqueued] == ["ack", "answer"]
+    assert store.completed == [{"message_id": "msg-1", "status": "completed", "result": "yes", "evidence_links": []}]
+
+
+def test_answer_packets_are_actionable_to_resume_clarification_threads():
+    store = FakeA2AStore(_message("answer"))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"answer": lambda message: A2AActionResult(message_type="final", body="thread closed")},
+    )
+
+    assert result["ack"]["message_type"] == "ack"
+    assert result["started"] is None
+    assert result["reply"]["message_type"] == "final"
+    assert [packet["message_type"] for packet in store.enqueued] == ["ack", "final"]
+    assert store.completed == [
+        {"message_id": "msg-1", "status": "completed", "result": "thread closed", "evidence_links": []}
+    ]
+
+
+def test_handler_status_final_is_normalized_to_completed_terminal_status():
+    store = FakeA2AStore(_message("work_request"))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": lambda message: {"message_type": "final", "status": "final", "body": "done"}},
+    )
+
+    assert result["reply"]["message_type"] == "final"
+    assert store.completed == [{"message_id": "msg-1", "status": "completed", "result": "done", "evidence_links": []}]
+
+
+
 def test_missing_capability_returns_needs_human_without_running_handler():
     ran = False
     store = FakeA2AStore(_message("work_request", payload={"required_capabilities": ["xai"]}))
