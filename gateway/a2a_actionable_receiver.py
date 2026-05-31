@@ -15,6 +15,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from gateway.a2a_receipts import format_a2a_receipt
+
 ACTIONABLE_MESSAGE_TYPES = frozenset({"work_request", "handoff", "consult", "question", "answer", "reply_required"})
 LIFECYCLE_MESSAGE_TYPES = frozenset(
     {
@@ -51,6 +53,7 @@ TERMINAL_STATUS_ALIASES = {
     "canceled": "cancelled",
 }
 Handler = Callable[[dict[str, Any]], "A2AActionResult | Mapping[str, Any] | str | None"]
+ReceiptJournal = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ def process_actionable_once(
     consumer: str,
     handlers: Mapping[str, Handler],
     capabilities: Iterable[str] | None = None,
+    receipt_journal: ReceiptJournal | None = None,
     block_ms: int = 1,
 ) -> dict[str, Any] | None:
     """Process one inbound A2A packet as an actionable handoff.
@@ -85,11 +89,14 @@ def process_actionable_once(
     if not message:
         return None
 
+    receipts = _ReceiptJournal(receipt_journal)
+
     sender = str(message.get("sender") or "").strip()
     message_id = str(message.get("message_id") or "")
     topic_id = str(message.get("topic_id") or "")
     subject = str(message.get("subject") or "A2A packet").strip() or "A2A packet"
     message_type = str(message.get("message_type") or "").lower().strip()
+    receipts.record("claimed", message)
 
     if message_type not in ACTIONABLE_MESSAGE_TYPES:
         original = store.complete(
@@ -97,11 +104,13 @@ def process_actionable_once(
             status="completed",
             result=f"Ignored non-actionable A2A lifecycle/status packet: {message_type or 'unknown'}",
         )
-        return {"original": original, "ack": None, "started": None, "reply": None, "ignored": True}
+        receipts.record("fyi_logged", message, status="completed")
+        return {"original": original, "ack": None, "started": None, "reply": None, "ignored": True, "receipts": receipts.lines}
 
     if not sender:
         original = store.complete(message_id, status="needs_human", result="Cannot process: original sender is missing")
-        return {"original": original, "ack": None, "started": None, "reply": None}
+        receipts.record("needs_human", message, status="needs_human")
+        return {"original": original, "ack": None, "started": None, "reply": None, "receipts": receipts.lines}
 
     ack = _enqueue_reply(
         store,
@@ -113,6 +122,7 @@ def process_actionable_once(
         body=f"ACK: {target} received {subject}.",
         idempotency_key=f"actionable:ack:{topic_id}:{message_id}:{target}:{sender}",
     )
+    receipts.record("ack", ack)
 
     requested_capabilities = _requested_capabilities(message)
     missing_capabilities = _missing_capabilities(requested_capabilities, capabilities)
@@ -135,7 +145,9 @@ def process_actionable_once(
             },
         )
         original = store.complete(message_id, status="needs_human", result=action.body, evidence_links=action.evidence_links)
-        return {"original": original, "ack": ack, "started": None, "reply": reply}
+        receipts.record(action.message_type, reply, status=action.status)
+        receipts.record("closed", message, status=action.status)
+        return {"original": original, "ack": ack, "started": None, "reply": reply, "receipts": receipts.lines}
 
     handler = _select_handler(handlers, message_type=message_type, requested_capabilities=requested_capabilities)
     if not handler:
@@ -147,7 +159,9 @@ def process_actionable_once(
         )
         reply = _send_action_reply(store, action, message=message, sender=target, target=sender)
         original = store.complete(message_id, status="needs_human", result=action.body, evidence_links=action.evidence_links)
-        return {"original": original, "ack": ack, "started": None, "reply": reply}
+        receipts.record(action.message_type, reply, status=action.status)
+        receipts.record("closed", message, status=action.status)
+        return {"original": original, "ack": ack, "started": None, "reply": reply, "receipts": receipts.lines}
 
     started = None
     if message_type == "work_request":
@@ -161,6 +175,7 @@ def process_actionable_once(
             body=f"{target} started {subject}.",
             idempotency_key=f"actionable:started:{topic_id}:{message_id}:{target}:{sender}",
         )
+        receipts.record("work_started", started)
 
     try:
         action = _normalize_action_result(handler(message))
@@ -179,7 +194,27 @@ def process_actionable_once(
         result=action.body,
         evidence_links=action.evidence_links,
     )
-    return {"original": original, "ack": ack, "started": started, "reply": reply}
+    receipts.record(action.message_type, reply, status=action.status)
+    receipts.record("closed", message, status=action.status)
+    return {"original": original, "ack": ack, "started": started, "reply": reply, "receipts": receipts.lines}
+
+
+class _ReceiptJournal:
+    def __init__(self, sink: ReceiptJournal | None) -> None:
+        self._sink = sink
+        self.lines: list[str] = []
+
+    def record(self, event_type: str, event: Mapping[str, Any] | None, *, status: str | None = None) -> None:
+        if not event:
+            return
+        receipt_event = dict(event)
+        receipt_event["event_type"] = event_type
+        if status:
+            receipt_event["status"] = status
+        line = format_a2a_receipt(receipt_event)
+        self.lines.append(line)
+        if self._sink:
+            self._sink(line)
 
 
 def _normalize_action_result(value: A2AActionResult | Mapping[str, Any] | str | None) -> A2AActionResult:

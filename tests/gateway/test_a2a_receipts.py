@@ -63,3 +63,16 @@ def test_format_a2a_receipts_formats_multiple_events():
     assert len(rows) == 2
     assert rows[0].startswith("✅ A2A")
     assert rows[1].startswith("🏁 A2A")
+
+
+def test_format_a2a_receipt_uses_first_targets_entry_from_enqueued_packets():
+    text = format_a2a_receipt(
+        {
+            "event_type": "ack",
+            "sender": "axon",
+            "targets": ["pons"],
+            "subject": "ACK: Provider smoke",
+        }
+    )
+
+    assert text.startswith("✅ A2A | axon → pons | ack")

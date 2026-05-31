@@ -81,7 +81,7 @@ def format_a2a_receipt(event: Mapping[str, Any]) -> str:
     if event_type not in RECEIPT_EVENTS:
         event_type = "reply" if event_type else "update"
     sender = _clean_name(event.get("sender")) or "unknown"
-    target = _clean_name(event.get("target") or event.get("receiver")) or "unknown"
+    target = _target_name(event) or "unknown"
     subject = _clean_subject(event.get("subject") or event.get("topic") or "A2A packet")
     message_id = _short_id(event.get("message_id") or event.get("id"))
     topic_id = _short_id(event.get("topic_id") or event.get("thread_id") or event.get("correlation_id"))
@@ -113,6 +113,13 @@ def _clean_token(value: Any) -> str:
 def _clean_name(value: Any) -> str:
     text = str(value or "").strip()
     return "".join(ch for ch in text if ch.isalnum() or ch in {"_", "-", "."})[:48]
+
+
+def _target_name(event: Mapping[str, Any]) -> str:
+    target = event.get("target") or event.get("receiver")
+    if not target and isinstance(event.get("targets"), list) and event["targets"]:
+        target = event["targets"][0]
+    return _clean_name(target)
 
 
 def _short_id(value: Any) -> str:

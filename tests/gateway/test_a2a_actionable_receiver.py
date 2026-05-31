@@ -164,3 +164,48 @@ def test_missing_capability_returns_needs_human_without_running_handler():
     assert result["reply"]["message_type"] == "needs_human"
     assert store.completed[0]["status"] == "needs_human"
     assert "missing capability xai" in store.completed[0]["result"]
+
+
+def test_actionable_receiver_returns_payload_safe_receipts_and_calls_sink():
+    journal = []
+    store = FakeA2AStore(
+        _message(
+            "work_request",
+            subject="Provider smoke",
+            body="private body must not leak",
+            payload={"private": "payload must not leak"},
+        )
+    )
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": lambda message: A2AActionResult(message_type="final", body="done")},
+        receipt_journal=journal.append,
+    )
+
+    assert result["receipts"] == journal
+    assert ["claimed", "ack", "work_started", "final", "closed"] == [
+        line.split(" | ")[2].split()[0] for line in journal
+    ]
+    joined = "\n".join(journal)
+    assert "private body" not in joined
+    assert "payload" not in joined
+
+
+def test_lifecycle_ignore_journals_claim_and_fyi_without_reply_loop():
+    journal = []
+    store = FakeA2AStore(_message("ack"))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={},
+        receipt_journal=journal.append,
+    )
+
+    assert result["ignored"] is True
+    assert store.enqueued == []
+    assert ["claimed", "fyi_logged"] == [line.split(" | ")[2].split()[0] for line in journal]
