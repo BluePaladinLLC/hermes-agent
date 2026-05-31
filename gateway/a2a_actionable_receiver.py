@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
-ACTIONABLE_MESSAGE_TYPES = frozenset({"work_request", "handoff", "consult"})
+ACTIONABLE_MESSAGE_TYPES = frozenset({"work_request", "handoff", "consult", "question", "answer", "reply_required"})
 LIFECYCLE_MESSAGE_TYPES = frozenset(
     {
         "ack",
@@ -32,7 +32,24 @@ LIFECYCLE_MESSAGE_TYPES = frozenset(
         "fyi_logged",
     }
 )
-REPLY_MESSAGE_TYPES = frozenset({"question", "work_result", "needs_human", "final", "nack"})
+REPLY_MESSAGE_TYPES = frozenset({"question", "answer", "work_result", "needs_human", "final", "nack"})
+TERMINAL_STATUS_ALIASES = {
+    "": "completed",
+    "final": "completed",
+    "done": "completed",
+    "ok": "completed",
+    "success": "completed",
+    "succeeded": "completed",
+    "complete": "completed",
+    "completed": "completed",
+    "needs_human": "needs_human",
+    "blocked": "needs_human",
+    "failed": "failed",
+    "failure": "failed",
+    "error": "failed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+}
 Handler = Callable[[dict[str, Any]], "A2AActionResult | Mapping[str, Any] | str | None"]
 
 
@@ -229,11 +246,12 @@ def _clean_action_result(action: A2AActionResult) -> A2AActionResult:
     message_type = action.message_type.lower().strip()
     if message_type not in REPLY_MESSAGE_TYPES:
         message_type = "final"
+    terminal_status = TERMINAL_STATUS_ALIASES.get(action.status.lower().strip(), "completed")
     return A2AActionResult(
         message_type=message_type,
-        status=action.status or "completed",
+        status=terminal_status,
         subject=action.subject,
-        body=action.body or action.status or "completed",
+        body=action.body or terminal_status,
         evidence_links=list(action.evidence_links or []),
     )
 
