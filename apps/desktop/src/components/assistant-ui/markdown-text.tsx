@@ -355,7 +355,6 @@ const MarkdownTextImpl = () => {
   return (
     <DeferStreamingText>
       <StreamdownTextPrimitive
-        caret="block"
         components={components}
         containerClassName={cn(
           'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',

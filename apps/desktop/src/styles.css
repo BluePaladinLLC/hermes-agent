@@ -948,55 +948,6 @@ canvas {
   height: 0.875rem;
 }
 
-/* Streaming caret + comet tail. Anchored to the cursor (not the block's
-   right edge) so it reads on short last lines. Spread inflates the bg-color
-   veil so it overlays text instead of haloing the tiny dither block. */
-[data-slot='aui_assistant-message-content']
-  [data-status='running']
-  > div
-  > *:last-child::after {
-  content: '' !important;
-  display: inline-block;
-  position: relative;
-  z-index: 2;
-  width: 0.6em;
-  height: 1em;
-  margin-left: 0.18em;
-  /* Net-zero the caret's inline advance so it paints at the text end without
-     consuming layout width. Otherwise its ~0.78em footprint can wrap the last
-     line mid-stream, and removing the caret on completion un-wraps it — the
-     visible "layout shift after the cursor goes away". */
-  margin-right: calc(-0.6em - 0.18em);
-  vertical-align: middle;
-  border-radius: 0.09375rem;
-  background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
-  color: color-mix(in srgb, var(--dt-foreground) 72%, transparent);
-  box-shadow:
-    -0.8ch 0 1.4ch 0.55em color-mix(in srgb, var(--dt-background) 80%, transparent),
-    -3ch 0 2.4ch 0.55em color-mix(in srgb, var(--dt-background) 64%, transparent),
-    -6.5ch 0 3.6ch 0.5em color-mix(in srgb, var(--dt-background) 44%, transparent),
-    -11ch 0 5ch 0.45em color-mix(in srgb, var(--dt-background) 28%, transparent),
-    -16ch 0 6.4ch 0.4em color-mix(in srgb, var(--dt-background) 16%, transparent),
-    -22ch 0 7.6ch 0.35em color-mix(in srgb, var(--dt-background) 8%, transparent),
-    0 0 0.4ch color-mix(in srgb, var(--dt-foreground) 28%, transparent);
-  animation: hermes-stream-caret 1.1s ease-in-out infinite;
-}
-
-@keyframes hermes-stream-caret {
-  0%, 100% { opacity: 0.95; }
-  50% { opacity: 0.45; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-slot='aui_assistant-message-content']
-    [data-status='running']
-    > div
-    > *:last-child::after {
-    animation: none;
-    opacity: 0.8;
-  }
-}
-
 /* Live thinking preview window. Pairs with the ResizeObserver in
    ThinkingDisclosure that pins scrollTop to the bottom — older lines fade
    into the top mask while the latest tokens settle in below. */
