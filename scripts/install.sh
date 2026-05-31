@@ -78,6 +78,7 @@ MANIFEST_MODE=false
 STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
+INCLUDE_DESKTOP=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -103,11 +104,11 @@ while [[ $# -gt 0 ]]; do
             SKIP_BROWSER=true
             shift
             ;;
-        --branch)
+        --branch|-Branch)
             BRANCH="$2"
             shift 2
             ;;
-        --commit)
+        --commit|-Commit)
             INSTALL_COMMIT="$2"
             shift 2
             ;;
@@ -125,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --non-interactive|-NonInteractive)
             NON_INTERACTIVE=true
+            shift
+            ;;
+        --include-desktop|-IncludeDesktop)
+            INCLUDE_DESKTOP=true
             shift
             ;;
         --dir)
@@ -159,6 +164,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --stage NAME   Run one desktop bootstrap stage"
             echo "  --json         Print a JSON result frame for --stage"
             echo "  --non-interactive  Skip stages that require user input"
+            echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -228,9 +234,17 @@ json_escape() {
 }
 
 emit_manifest() {
-    cat <<'JSON'
-{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}
-JSON
+    # Stage-Desktop is included only with --include-desktop, mirroring
+    # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
+    # a GUI install ends up with a launchable app; the Electron app's own
+    # first-launch bootstrap and the CLI one-liner omit it (building the
+    # desktop from inside the already-running app would clobber it).
+    local desktop_stage=""
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
+    fi
+    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    printf '\n'
 }
 
 stage_needs_user_input() {
@@ -2162,6 +2176,64 @@ postinstall_mode() {
     fi
 }
 
+# Build apps/desktop into a launchable Hermes.app. Mirrors install.ps1's
+# Install-Desktop: a root-level npm install so the apps/* workspace resolves
+# the desktop's own deps (Electron ~150MB), then `npm run pack`
+# (electron-builder --dir) which emits release/mac*/Hermes.app. Only invoked
+# via the 'desktop' stage / --include-desktop, which the Electron app's own
+# first-launch bootstrap never requests (it must not rebuild itself).
+install_desktop() {
+    local desktop_dir="$INSTALL_DIR/apps/desktop"
+
+    if ! command -v npm >/dev/null 2>&1; then
+        log_warn "Skipping desktop build (Node.js / npm not on PATH)"
+        return 0
+    fi
+    if [ ! -f "$desktop_dir/package.json" ]; then
+        log_warn "Skipping desktop build (apps/desktop not present in checkout)"
+        return 0
+    fi
+
+    # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
+    #    node-pty prebuilds) resolve. The browser-tools install runs in the
+    #    repo-root package workspace, which does not pull apps/* deps.
+    log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
+    ( cd "$INSTALL_DIR" && npm install ) || {
+        log_error "Desktop workspace npm install failed"
+        return 1
+    }
+    log_success "Desktop workspace dependencies installed"
+
+    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
+    #    producing an unpacked release/mac*/Hermes.app. We disable signing
+    #    auto-discovery so electron-builder falls back to an ad-hoc signature
+    #    instead of grabbing an unrelated Developer ID from the keychain; a
+    #    real signed/notarized .dmg needs Apple credentials and is a separate
+    #    release concern.
+    log_info "Building desktop app (this takes 1-3 minutes)..."
+    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+        log_error "Desktop app build failed"
+        log_info "Run manually: cd $desktop_dir && npm run pack"
+        return 1
+    }
+
+    local app=""
+    local cand
+    for cand in \
+        "$desktop_dir/release/mac-arm64/Hermes.app" \
+        "$desktop_dir/release/mac/Hermes.app"; do
+        if [ -d "$cand" ]; then
+            app="$cand"
+            break
+        fi
+    done
+    if [ -z "$app" ]; then
+        log_error "Desktop build completed but no Hermes.app was found under $desktop_dir/release/"
+        return 1
+    fi
+    log_success "Desktop app built: $app"
+}
+
 # Each --stage runs in its own process, so (unlike the monolithic main() where
 # clone_repo cd's once and later steps inherit it) a stage that operates on the
 # checkout must cd into it explicitly. Without this, install_deps/setup_path run
@@ -2245,6 +2317,12 @@ run_stage_body() {
             require_install_dir
             maybe_start_gateway
             ;;
+        desktop)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_desktop
+            ;;
         complete)
             detect_os
             resolve_install_layout
@@ -2315,6 +2393,10 @@ main() {
     copy_config_templates
     run_setup_wizard
     maybe_start_gateway
+
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        install_desktop
+    fi
 
     print_success
 
