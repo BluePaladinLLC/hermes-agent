@@ -4201,6 +4201,89 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     return {"ok": True, "name": name, "enabled": body.enabled}
 
 
+@app.get("/api/tools/toolsets/{name}/config")
+async def get_toolset_config(name: str):
+    """Return the provider matrix + key status for a toolset's config panel.
+
+    Surfaces the same provider rows the CLI ``hermes tools`` picker shows
+    (via ``_visible_providers``), each with its ``env_vars`` annotated with
+    current ``is_set`` state so the GUI can render provider selection + key
+    entry. Toolsets without a ``TOOL_CATEGORIES`` entry return an empty
+    provider list and ``has_category: false``. Returns 400 for unknown keys.
+    """
+    from hermes_cli.tools_config import (
+        TOOL_CATEGORIES,
+        _get_effective_configurable_toolsets,
+        _visible_providers,
+    )
+    from hermes_cli.config import get_env_value
+
+    valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    cat = TOOL_CATEGORIES.get(name)
+    providers = []
+    if cat:
+        for prov in _visible_providers(cat, config, force_fresh=True):
+            env_vars = [
+                {
+                    "key": e["key"],
+                    "prompt": e.get("prompt", e["key"]),
+                    "url": e.get("url"),
+                    "default": e.get("default"),
+                    "is_set": bool(get_env_value(e["key"])),
+                }
+                for e in prov.get("env_vars", [])
+            ]
+            providers.append({
+                "name": prov["name"],
+                "badge": prov.get("badge", ""),
+                "tag": prov.get("tag", ""),
+                "env_vars": env_vars,
+                "post_setup": prov.get("post_setup"),
+                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+            })
+    return {
+        "name": name,
+        "has_category": cat is not None,
+        "providers": providers,
+    }
+
+
+class ToolsetProviderSelect(BaseModel):
+    provider: str
+
+
+@app.put("/api/tools/toolsets/{name}/provider")
+async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
+    """Persist a provider selection for a toolset (no key prompting).
+
+    Delegates to ``apply_provider_selection`` — the shared, non-interactive
+    core extracted from the CLI configurator — so the GUI and ``hermes tools``
+    write identical config keys (``web.backend``, ``tts.provider``, etc.).
+    API keys and post-setup flows are handled by separate endpoints. Returns
+    400 for unknown toolset or provider names.
+    """
+    from hermes_cli.tools_config import (
+        apply_provider_selection,
+        _get_effective_configurable_toolsets,
+    )
+
+    valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    try:
+        apply_provider_selection(name, body.provider, config)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+    save_config(config)
+    return {"ok": True, "name": name, "provider": body.provider}
+
+
 # ---------------------------------------------------------------------------
 # Raw YAML config endpoint
 # ---------------------------------------------------------------------------

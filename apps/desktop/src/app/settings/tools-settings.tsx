@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Switch } from '@/components/ui/switch'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
@@ -8,6 +8,7 @@ import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { asText, includesQuery, prettyName, toolNames } from './helpers'
 import { ListRow, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { ToolsetConfigPanel } from './toolset-config-panel'
 import type { SearchProps } from './types'
 
 export function ToolsSettings({ query }: SearchProps) {
@@ -15,6 +16,7 @@ export function ToolsSettings({ query }: SearchProps) {
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
   const [savingToolset, setSavingToolset] = useState<string | null>(null)
+  const [expandedToolset, setExpandedToolset] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -30,6 +32,12 @@ export function ToolsSettings({ query }: SearchProps) {
       .catch(err => notifyError(err, 'Capabilities failed to load'))
 
     return () => void (cancelled = true)
+  }, [])
+
+  const refreshToolsets = useCallback(() => {
+    getToolsets()
+      .then(setToolsets)
+      .catch(err => notifyError(err, 'Toolsets failed to refresh'))
   }, [])
 
   const filteredSkills = useMemo(() => {
@@ -159,14 +167,23 @@ export function ToolsSettings({ query }: SearchProps) {
           {filteredToolsets.map(toolset => {
             const tools = toolNames(toolset)
             const label = asText(toolset.label || toolset.name)
+            const expanded = expandedToolset === toolset.name
 
             return (
               <ListRow
                 action={
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <Pill tone={toolset.configured ? 'primary' : 'muted'}>
-                      {toolset.configured ? 'Configured' : 'Needs keys'}
-                    </Pill>
+                    <button
+                      aria-expanded={expanded}
+                      aria-label={`Configure ${label}`}
+                      className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      onClick={() => setExpandedToolset(c => (c === toolset.name ? null : toolset.name))}
+                      type="button"
+                    >
+                      <Pill tone={toolset.configured ? 'primary' : 'muted'}>
+                        {toolset.configured ? 'Configured' : 'Needs keys'}
+                      </Pill>
+                    </button>
                     <Switch
                       aria-label={`Toggle ${label} toolset`}
                       checked={toolset.enabled}
@@ -176,23 +193,28 @@ export function ToolsSettings({ query }: SearchProps) {
                   </div>
                 }
                 below={
-                  tools.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1">
-                      {tools.slice(0, 10).map(t => (
-                        <span
-                          className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.64rem] text-muted-foreground"
-                          key={t}
-                        >
-                          {t}
-                        </span>
-                      ))}
-                      {tools.length > 10 && (
-                        <span className="rounded-md bg-muted px-1.5 py-0.5 text-[0.64rem] text-muted-foreground">
-                          +{tools.length - 10} more
-                        </span>
-                      )}
-                    </div>
-                  )
+                  <>
+                    {tools.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1">
+                        {tools.slice(0, 10).map(t => (
+                          <span
+                            className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.64rem] text-muted-foreground"
+                            key={t}
+                          >
+                            {t}
+                          </span>
+                        ))}
+                        {tools.length > 10 && (
+                          <span className="rounded-md bg-muted px-1.5 py-0.5 text-[0.64rem] text-muted-foreground">
+                            +{tools.length - 10} more
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {expanded && (
+                      <ToolsetConfigPanel onConfiguredChange={refreshToolsets} toolset={toolset.name} />
+                    )}
+                  </>
                 }
                 description={asText(toolset.description)}
                 key={asText(toolset.name) || label}

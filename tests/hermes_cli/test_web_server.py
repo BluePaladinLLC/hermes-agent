@@ -1339,6 +1339,66 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_get_toolset_config_returns_provider_matrix(self):
+        """GET .../config returns provider rows with structured env_vars."""
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "tts"
+        assert data["has_category"] is True
+        assert isinstance(data["providers"], list)
+        assert data["providers"], "tts always has at least the built-in providers"
+        for prov in data["providers"]:
+            assert "name" in prov
+            assert "env_vars" in prov
+            assert isinstance(prov["env_vars"], list)
+            for ev in prov["env_vars"]:
+                assert "key" in ev
+                assert "is_set" in ev
+
+    def test_get_toolset_config_no_category_toolset(self):
+        """A toolset without a TOOL_CATEGORIES entry returns has_category False."""
+        resp = self.client.get("/api/tools/toolsets/todo/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "todo"
+        assert data["has_category"] is False
+        assert data["providers"] == []
+
+    def test_get_toolset_config_unknown_returns_400(self):
+        resp = self.client.get("/api/tools/toolsets/not_a_real_toolset/config")
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_persists_backend(self):
+        """PUT .../provider writes the backend selection to config."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "web"
+        assert body["provider"] == "Firecrawl Self-Hosted"
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["backend"] == "firecrawl"
+
+    def test_select_toolset_provider_unknown_provider_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "No Such Provider"},
+        )
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_unknown_toolset_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/not_a_real_toolset/provider",
+            json={"provider": "whatever"},
+        )
+        assert resp.status_code == 400
+
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
         assert resp.status_code == 200

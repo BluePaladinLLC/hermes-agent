@@ -36,6 +36,7 @@ import type {
   SessionSearchResponse,
   SkillInfo,
   StatusResponse,
+  ToolsetConfig,
   ToolsetInfo
 } from '@/types/hermes'
 
@@ -94,6 +95,7 @@ export type {
   SessionSearchResult,
   SkillInfo,
   StatusResponse,
+  ToolsetConfig,
   ToolsetInfo
 } from '@/types/hermes'
 
@@ -316,6 +318,23 @@ export function toggleToolset(
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
     body: { enabled }
+  })
+}
+
+export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
+  return window.hermesDesktop.api<ToolsetConfig>({
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
+  })
+}
+
+export function selectToolsetProvider(
+  name: string,
+  provider: string
+): Promise<{ ok: boolean; name: string; provider: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
+    method: 'PUT',
+    body: { provider }
   })
 }
 

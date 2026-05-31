@@ -454,6 +454,29 @@ export interface ToolsetInfo {
   tools: string[]
 }
 
+export interface ToolEnvVar {
+  key: string
+  prompt: string
+  url: string | null
+  default: string | null
+  is_set: boolean
+}
+
+export interface ToolProvider {
+  name: string
+  badge: string
+  tag: string
+  env_vars: ToolEnvVar[]
+  post_setup: string | null
+  requires_nous_auth: boolean
+}
+
+export interface ToolsetConfig {
+  name: string
+  has_category: boolean
+  providers: ToolProvider[]
+}
+
 export interface SessionSearchResult {
   model: string | null
   role: string | null
