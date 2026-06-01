@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from gateway.a2a_canary import run_axon_pons_clarification_canary, run_axon_pons_final_canary
+from gateway.a2a_canary import (
+    run_axon_pons_clarification_canary,
+    run_axon_pons_final_canary,
+    run_role_matrix_canaries,
+)
 
 
 def _events(summary):
@@ -41,3 +45,24 @@ def test_axon_pons_clarification_canary_round_trips_question_answer_final():
     assert events.count("final") == 1
     assert events.count("work_started") == 1
     assert "private canary body" not in "\n".join(summary["receipts"])
+
+
+def test_role_matrix_canaries_cover_fleet_roles_without_payload_leaks():
+    summaries = run_role_matrix_canaries()
+
+    assert len(summaries) == 5
+    assert {summary["name"] for summary in summaries} == {
+        "pons_axon_compat",
+        "vagus_pons_compat",
+        "synapse_vagus_compat",
+        "thalamus_synapse_compat",
+        "axon_thalamus_compat",
+    }
+    for summary in summaries:
+        assert summary["ok"] is True
+        assert summary["pending"] == 0
+        events = _events(summary)
+        assert events.count("question") == 1
+        assert events.count("answer") == 1
+        assert events.count("final") == 1
+        assert "private canary body" not in "\n".join(summary["receipts"])
