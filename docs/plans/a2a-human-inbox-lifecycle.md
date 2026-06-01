@@ -82,6 +82,8 @@ Invariant: lifecycle/status packets update state only. They must never create a 
 3. Pending/deadletter hygiene: no stale pending, no lifecycle packet churn.
 4. Roll out to VAGUS, Synapse, and Thalamus only after canaries pass.
 
+Current local/non-production rollout runbook: [`a2a-local-receiver-rollout.md`](a2a-local-receiver-rollout.md).
+
 ## Safety boundaries
 
 - A2A handoffs do not authorize repo writes, service restarts, production wiring, or destructive actions.
