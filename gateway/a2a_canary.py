@@ -101,20 +101,27 @@ def run_axon_pons_final_canary() -> dict[str, Any]:
 def run_axon_pons_clarification_canary() -> dict[str, Any]:
     """Exercise question → answer → final across Axon/Pons without lifecycle churn."""
 
+    return run_pair_clarification_canary(sender="pons", receiver="axon", name="axon_pons_clarification")
+
+
+def run_pair_clarification_canary(*, sender: str, receiver: str, name: str | None = None) -> dict[str, Any]:
+    """Exercise question → answer → final for any two A2A role names."""
+
+    name = name or f"{receiver}_{sender}_clarification"
     store = A2ACanaryStore()
     receipts: list[str] = []
     store.seed(
-        sender="pons",
-        target="axon",
+        sender=sender,
+        target=receiver,
         message_type="work_request",
-        topic_id="a2a-canary-clarification",
+        topic_id=f"a2a-canary-clarification-{sender}-{receiver}",
         subject="A2A clarification canary",
         body="private canary body should not appear in receipts",
     )
 
-    axon_question = _tick(
+    receiver_question = _tick(
         store,
-        target="axon",
+        target=receiver,
         handlers={
             "work_request": lambda message: A2AActionResult(
                 message_type="question",
@@ -124,26 +131,37 @@ def run_axon_pons_clarification_canary() -> dict[str, Any]:
         },
         receipts=receipts,
     )
-    pons_answer = _tick(
+    sender_answer = _tick(
         store,
-        target="pons",
+        target=sender,
         handlers={"question": lambda message: A2AActionResult(message_type="answer", body="Detail supplied.")},
         receipts=receipts,
     )
-    axon_final = _tick(
+    receiver_final = _tick(
         store,
-        target="axon",
+        target=receiver,
         handlers={"answer": lambda message: A2AActionResult(message_type="final", body="clarification closed")},
         receipts=receipts,
     )
-    pons_close = _tick(store, target="pons", handlers={}, receipts=receipts)
+    sender_close = _tick(store, target=sender, handlers={}, receipts=receipts)
 
     return _summary(
-        "axon_pons_clarification",
+        name,
         store=store,
         receipts=receipts,
-        ticks=[axon_question, pons_answer, axon_final, pons_close],
+        ticks=[receiver_question, sender_answer, receiver_final, sender_close],
     )
+
+
+def run_role_matrix_canaries(roles: list[str] | None = None) -> list[dict[str, Any]]:
+    """Run lightweight compatibility canaries for the rollout role set."""
+
+    roles = roles or ["axon", "pons", "vagus", "synapse", "thalamus"]
+    pairs = [(roles[index], roles[(index + 1) % len(roles)]) for index in range(len(roles))]
+    return [
+        run_pair_clarification_canary(sender=sender, receiver=receiver, name=f"{receiver}_{sender}_compat")
+        for sender, receiver in pairs
+    ]
 
 
 def _tick(store: A2ACanaryStore, *, target: str, handlers: Mapping[str, Handler], receipts: list[str]) -> dict[str, Any]:
