@@ -74,6 +74,39 @@ def test_actionable_work_request_acks_starts_runs_handler_and_finalizes():
     assert store.completed == [{"message_id": "msg-1", "status": "completed", "result": "done", "evidence_links": []}]
 
 
+def test_no_reply_actionable_runs_handler_and_completes_without_enqueue_loop():
+    store = FakeA2AStore(_message("work_request", payload={"no_reply": True}))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": lambda message: A2AActionResult(message_type="final", body="done")},
+    )
+
+    assert result["ack"] is None
+    assert result["started"] is None
+    assert result["reply"] is None
+    assert store.enqueued == []
+    assert store.completed == [{"message_id": "msg-1", "status": "completed", "result": "done", "evidence_links": []}]
+
+
+def test_no_reply_marker_in_subject_suppresses_responses():
+    store = FakeA2AStore(_message("handoff", subject="final-no-reply: receipt closeout"))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"handoff": lambda message: "filed"},
+    )
+
+    assert result["ack"] is None
+    assert result["reply"] is None
+    assert store.enqueued == []
+    assert store.completed[0]["status"] == "completed"
+
+
 def test_handoff_acks_and_finalizes_without_work_started_noise():
     store = FakeA2AStore(_message("handoff"))
 

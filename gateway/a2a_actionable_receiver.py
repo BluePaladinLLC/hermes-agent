@@ -35,6 +35,7 @@ LIFECYCLE_MESSAGE_TYPES = frozenset(
     }
 )
 REPLY_MESSAGE_TYPES = frozenset({"question", "answer", "work_result", "needs_human", "final", "nack"})
+NO_REPLY_MARKERS = frozenset({"final-no-reply", "no-reply"})
 TERMINAL_STATUS_ALIASES = {
     "": "completed",
     "final": "completed",
@@ -97,6 +98,7 @@ def process_actionable_once(
     subject = str(message.get("subject") or "A2A packet").strip() or "A2A packet"
     message_type = str(message.get("message_type") or "").lower().strip()
     receipts.record("claimed", message)
+    no_reply = _is_no_reply_message(message)
 
     if message_type not in ACTIONABLE_MESSAGE_TYPES:
         original = store.complete(
@@ -112,17 +114,19 @@ def process_actionable_once(
         receipts.record("needs_human", message, status="needs_human")
         return {"original": original, "ack": None, "started": None, "reply": None, "receipts": receipts.lines}
 
-    ack = _enqueue_reply(
-        store,
-        sender=target,
-        target=sender,
-        message_type="ack",
-        topic_id=topic_id,
-        subject=f"ACK: {subject}",
-        body=f"ACK: {target} received {subject}.",
-        idempotency_key=f"actionable:ack:{topic_id}:{message_id}:{target}:{sender}",
-    )
-    receipts.record("ack", ack)
+    ack = None
+    if not no_reply:
+        ack = _enqueue_reply(
+            store,
+            sender=target,
+            target=sender,
+            message_type="ack",
+            topic_id=topic_id,
+            subject=f"ACK: {subject}",
+            body=f"ACK: {target} received {subject}.",
+            idempotency_key=f"actionable:ack:{topic_id}:{message_id}:{target}:{sender}",
+        )
+        receipts.record("ack", ack)
 
     requested_capabilities = _requested_capabilities(message)
     missing_capabilities = _missing_capabilities(requested_capabilities, capabilities)
@@ -133,17 +137,19 @@ def process_actionable_once(
             subject=f"Needs capability: {subject}",
             body="Cannot process: missing capability " + ", ".join(missing_capabilities),
         )
-        reply = _send_action_reply(
-            store,
-            action,
-            message=message,
-            sender=target,
-            target=sender,
-            payload={
-                "requested_capabilities": requested_capabilities,
-                "missing_capabilities": missing_capabilities,
-            },
-        )
+        reply = None
+        if not no_reply:
+            reply = _send_action_reply(
+                store,
+                action,
+                message=message,
+                sender=target,
+                target=sender,
+                payload={
+                    "requested_capabilities": requested_capabilities,
+                    "missing_capabilities": missing_capabilities,
+                },
+            )
         original = store.complete(message_id, status="needs_human", result=action.body, evidence_links=action.evidence_links)
         receipts.record(action.message_type, reply, status=action.status)
         receipts.record("closed", message, status=action.status)
@@ -157,14 +163,16 @@ def process_actionable_once(
             subject=f"Needs human: {subject}",
             body=f"No handler registered for message_type={message_type or 'unknown'}",
         )
-        reply = _send_action_reply(store, action, message=message, sender=target, target=sender)
+        reply = None
+        if not no_reply:
+            reply = _send_action_reply(store, action, message=message, sender=target, target=sender)
         original = store.complete(message_id, status="needs_human", result=action.body, evidence_links=action.evidence_links)
         receipts.record(action.message_type, reply, status=action.status)
         receipts.record("closed", message, status=action.status)
         return {"original": original, "ack": ack, "started": None, "reply": reply, "receipts": receipts.lines}
 
     started = None
-    if message_type == "work_request":
+    if message_type == "work_request" and not no_reply:
         started = _enqueue_reply(
             store,
             sender=target,
@@ -187,7 +195,9 @@ def process_actionable_once(
             body=f"Handler failed: {exc}",
         )
 
-    reply = _send_action_reply(store, action, message=message, sender=target, target=sender)
+    reply = None
+    if not no_reply:
+        reply = _send_action_reply(store, action, message=message, sender=target, target=sender)
     original = store.complete(
         message_id,
         status=action.status,
@@ -197,6 +207,24 @@ def process_actionable_once(
     receipts.record(action.message_type, reply, status=action.status)
     receipts.record("closed", message, status=action.status)
     return {"original": original, "ack": ack, "started": started, "reply": reply, "receipts": receipts.lines}
+
+
+def _is_no_reply_message(message: Mapping[str, Any]) -> bool:
+    """Return True when the packet explicitly asks receivers not to answer."""
+
+    subject = str(message.get("subject") or "").lower()
+    body = str(message.get("body") or "").lower()
+    if any(marker in subject or marker in body for marker in NO_REPLY_MARKERS):
+        return True
+
+    payload = message.get("payload") or {}
+    if isinstance(payload, Mapping):
+        if payload.get("no_reply") is True or payload.get("final_no_reply") is True:
+            return True
+        delivery = payload.get("delivery") or {}
+        if isinstance(delivery, Mapping) and delivery.get("no_reply") is True:
+            return True
+    return False
 
 
 class _ReceiptJournal:
