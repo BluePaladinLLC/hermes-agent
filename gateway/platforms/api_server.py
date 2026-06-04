@@ -58,6 +58,13 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.a2a_consult import (
+    A2AConsultError,
+    consult as run_a2a_consult,
+    normalize_targets,
+    redact_secrets,
+    request_from_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -694,6 +701,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._a2a_targets_config: Any = extra.get("a2a_targets", {}) or {}
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -865,6 +873,145 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    # ------------------------------------------------------------------
+    # A2A consult wrapper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _redact_a2a_consult_text(value: Any) -> str:
+        text = redact_secrets(value)
+        # Shortened/examples tokens such as ``ghp_ab...3456`` are not real
+        # GitHub tokens, but they are intentionally secret-shaped in tests and
+        # should never echo back from a private consult rejection contract.
+        return re.sub(r"\bgh[pousr]_[A-Za-z0-9._-]{6,}\b", "[REDACTED:github_token]", text)
+
+    @classmethod
+    def _a2a_consult_contract(
+        cls,
+        *,
+        target: str = "",
+        status: str = "rejected",
+        error: str = "",
+        confidence: str = "high",
+        evidence: Optional[List[str]] = None,
+        risks: Optional[List[str]] = None,
+        next_action: str = "fix request payload before retrying",
+        run_id: Optional[str] = None,
+        elapsed_seconds: float = 0.0,
+    ) -> Dict[str, Any]:
+        safe_error = cls._redact_a2a_consult_text(error) if error else ""
+        payload: Dict[str, Any] = {
+            "object": "hermes.a2a_consult",
+            "target": cls._redact_a2a_consult_text(target) if target else "",
+            "status": status,
+            "position": "unavailable",
+            "confidence": confidence,
+            "evidence": evidence or ["local A2A consult validation failed"],
+            "risks": risks or ["consult was not started"],
+            "next_action": next_action,
+            "run_id": run_id,
+        }
+        if safe_error:
+            payload["error"] = safe_error
+            payload["failure_reason"] = safe_error
+        payload["delivery"] = "api:/v1/a2a/consult -> target:/v1/runs"
+        payload["elapsed_seconds"] = elapsed_seconds
+        return payload
+
+    async def _handle_a2a_consult(self, request: "web.Request") -> "web.Response":
+        """POST /v1/a2a/consult — bounded private A2A consult wrapper.
+
+        This is a visibility/control wrapper over the target agent's /v1/runs
+        execution surface.  It validates and redacts locally before any remote
+        call, then returns a stable contract for callers and audits.
+        """
+
+        started = time.monotonic()
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        payload: Any = None
+
+        def elapsed() -> float:
+            return round(time.monotonic() - started, 6)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                self._a2a_consult_contract(
+                    error="Invalid JSON",
+                    next_action="send a valid JSON object before retrying",
+                    elapsed_seconds=elapsed(),
+                ),
+                status=400,
+            )
+
+        target_text = ""
+        if isinstance(payload, dict):
+            target_text = str(payload.get("target") or "")
+
+        try:
+            consult_request = request_from_payload(payload)
+            targets = normalize_targets(self._a2a_targets_config)
+            result = await run_a2a_consult(consult_request, targets)
+        except A2AConsultError as exc:
+            message = str(exc)
+            status_code = 404 if "Unknown A2A target" in message else 400
+            next_action = "configure a known A2A target before retrying" if status_code == 404 else "fix request payload before retrying"
+            return web.json_response(
+                self._a2a_consult_contract(
+                    target=target_text,
+                    error=message,
+                    next_action=next_action,
+                    elapsed_seconds=elapsed(),
+                ),
+                status=status_code,
+            )
+        except Exception as exc:
+            logger.exception("A2A consult wrapper failed: %s", exc)
+            return web.json_response(
+                self._a2a_consult_contract(
+                    target=target_text,
+                    status="failed",
+                    confidence="medium",
+                    evidence=["local A2A consult wrapper failed"],
+                    risks=["consult status is unavailable"],
+                    next_action="inspect API server logs before retrying",
+                    error=str(exc),
+                    elapsed_seconds=elapsed(),
+                ),
+                status=500,
+            )
+
+        if not isinstance(result, dict):
+            result = self._a2a_consult_contract(
+                target=target_text,
+                status="failed",
+                confidence="medium",
+                evidence=["A2A consult returned a non-object response"],
+                risks=["consult status is unavailable"],
+                next_action="inspect A2A consult implementation before retrying",
+                error="invalid consult response",
+                elapsed_seconds=elapsed(),
+            )
+            return web.json_response(result, status=500)
+
+        result = dict(result)
+        result.setdefault("delivery", "api:/v1/a2a/consult -> target:/v1/runs")
+        result.setdefault("elapsed_seconds", elapsed())
+        if result.get("error") and "failure_reason" not in result:
+            result["failure_reason"] = redact_secrets(result.get("error"))
+
+        result_status = str(result.get("status") or "").lower()
+        http_status = 200
+        if result_status in {"failed", "timeout", "unauthorized"}:
+            http_status = 502
+        elif result_status == "approval_needed":
+            http_status = 202
+        return web.json_response(result, status=http_status)
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -4119,6 +4266,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # A2A consult wrapper over the /v1/runs execution lane.
+            self._app.router.add_post("/v1/a2a/consult", self._handle_a2a_consult)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
