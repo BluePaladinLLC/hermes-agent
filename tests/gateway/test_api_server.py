@@ -656,12 +656,24 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
-            assert data["features"]["a2a_consult"] is True
+            assert data["features"]["a2a_consult"] is False
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
-            assert data["endpoints"]["a2a_consult"] == {"method": "POST", "path": "/v1/a2a/consult"}
+            assert "a2a_consult" not in data["endpoints"]
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_a2a_consult_only_when_enabled(self):
+        adapter = _make_adapter()
+        adapter._a2a_consult_enabled = True
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["a2a_consult"] is True
+            assert data["endpoints"]["a2a_consult"] == {"method": "POST", "path": "/v1/a2a/consult"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

@@ -26,6 +26,7 @@ def test_a2a_consult_tool_waits_and_marks_api_lane(monkeypatch):
         }
 
     monkeypatch.setattr(a2a_consult_tool, "_load_api_server_a2a_targets", lambda: {"pons": "http://127.0.0.1:8643"})
+    monkeypatch.setattr(a2a_consult_tool, "_api_server_a2a_consult_enabled", lambda: True)
     monkeypatch.setattr(a2a_module, "consult", fake_consult)
 
     raw = a2a_consult_tool.a2a_consult_tool(
@@ -69,6 +70,7 @@ def test_a2a_consult_tool_accepts_handoff_fields(monkeypatch):
         }
 
     monkeypatch.setattr(a2a_consult_tool, "_load_api_server_a2a_targets", lambda: {"pons": "http://127.0.0.1:8643"})
+    monkeypatch.setattr(a2a_consult_tool, "_api_server_a2a_consult_enabled", lambda: True)
     monkeypatch.setattr(a2a_module, "consult", fake_consult)
 
     raw = a2a_consult_tool.a2a_consult_tool(
@@ -97,6 +99,7 @@ def test_a2a_consult_tool_reports_missing_targets(monkeypatch):
     from tools import a2a_consult_tool
 
     monkeypatch.setattr(a2a_consult_tool, "_load_api_server_a2a_targets", lambda: {})
+    monkeypatch.setattr(a2a_consult_tool, "_api_server_a2a_consult_enabled", lambda: True)
 
     result = json.loads(a2a_consult_tool.a2a_consult_tool({"target": "pons", "prompt": "review"}))
 
@@ -111,7 +114,7 @@ def test_check_requirements_reads_api_server_targets(monkeypatch):
         platforms = {
             Platform.API_SERVER: PlatformConfig(
                 enabled=True,
-                extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}},
+                extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True},
             )
         }
 
@@ -130,3 +133,32 @@ def test_check_requirements_false_without_api_targets(monkeypatch):
     monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: Config())
 
     assert a2a_consult_tool.check_requirements() is False
+
+
+def test_check_requirements_false_when_consult_not_explicitly_enabled(monkeypatch):
+    from tools import a2a_consult_tool
+    import gateway.config as gateway_config
+
+    class Config:
+        platforms = {
+            Platform.API_SERVER: PlatformConfig(
+                enabled=True,
+                extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}},
+            )
+        }
+
+    monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: Config())
+
+    assert a2a_consult_tool.check_requirements() is False
+
+
+def test_a2a_consult_tool_fails_closed_when_disabled(monkeypatch):
+    from tools import a2a_consult_tool
+
+    monkeypatch.setattr(a2a_consult_tool, "_api_server_a2a_consult_enabled", lambda: False)
+
+    result = json.loads(a2a_consult_tool.a2a_consult_tool({"target": "pons", "prompt": "review"}))
+
+    assert result == {
+        "error": "a2a_consult is disabled; use the durable A2A inbox/work_request flow with receipts"
+    }

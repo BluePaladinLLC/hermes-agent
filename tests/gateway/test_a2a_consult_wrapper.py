@@ -224,9 +224,26 @@ def test_target_base_url_userinfo_credentials_fail_closed():
 
 
 @pytest.mark.asyncio
-async def test_api_route_rejects_malformed_json_with_contract():
+async def test_api_route_fails_closed_when_consult_not_enabled():
     adapter = APIServerAdapter(
         PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+    )
+    async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
+        resp = await cli.post("/v1/a2a/consult", json={"target": "pons", "prompt": "review"})
+        data = await resp.json()
+
+    assert resp.status == 403
+    assert data["object"] == "hermes.a2a_consult"
+    assert data["status"] == "rejected"
+    assert data["run_id"] is None
+    assert "use durable A2A inbox/work_request flow" in data["error"]
+    assert data["next_action"] == "send a durable inbox work_request/handoff and wait for a receipt"
+
+
+@pytest.mark.asyncio
+async def test_api_route_rejects_malformed_json_with_contract():
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post(
@@ -259,7 +276,7 @@ async def test_api_route_rejects_malformed_json_with_contract():
 @pytest.mark.asyncio
 async def test_api_route_maps_zero_timeout_to_validation_400():
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post(
@@ -276,7 +293,7 @@ async def test_api_route_maps_zero_timeout_to_validation_400():
 @pytest.mark.asyncio
 async def test_api_route_rejects_non_object_payload_with_contract():
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post("/v1/a2a/consult", json=["not", "an", "object"])
@@ -293,7 +310,7 @@ async def test_api_route_rejects_non_object_payload_with_contract():
 @pytest.mark.asyncio
 async def test_api_route_redacts_secret_like_target_in_rejection_contract():
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     secret_target = "ghp_ab...3456"
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
@@ -753,7 +770,7 @@ async def test_api_route_adds_delivery_timing_and_failure_reason(monkeypatch):
 
     monkeypatch.setattr(api_server_module, "run_a2a_consult", fake_consult)
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post("/v1/a2a/consult", json={"target": "pons", "prompt": "review"})
@@ -785,7 +802,7 @@ async def test_api_route_requires_auth_for_private_consult():
 @pytest.mark.asyncio
 async def test_api_route_maps_unknown_target_to_404():
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post("/v1/a2a/consult", json={"target": "missing", "prompt": "review"})
@@ -800,7 +817,7 @@ async def test_api_route_maps_unknown_target_to_404():
 @pytest.mark.asyncio
 async def test_api_route_maps_invalid_timeout_to_validation_400():
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}})
+        PlatformConfig(enabled=True, extra={"a2a_targets": {"pons": "http://127.0.0.1:8643"}, "a2a_consult_enabled": True})
     )
     async with TestClient(TestServer(_create_a2a_app(adapter))) as cli:
         resp = await cli.post(
