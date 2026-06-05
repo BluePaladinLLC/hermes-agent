@@ -702,6 +702,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._a2a_targets_config: Any = extra.get("a2a_targets", {}) or {}
+        raw_a2a_consult_enabled = extra.get("a2a_consult_enabled")
+        if raw_a2a_consult_enabled is None:
+            raw_a2a_consult_enabled = os.getenv("API_SERVER_A2A_CONSULT_ENABLED")
+        self._a2a_consult_enabled: bool = _coerce_request_bool(raw_a2a_consult_enabled, False)
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -932,10 +936,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        payload: Any = None
-
         def elapsed() -> float:
             return round(time.monotonic() - started, 6)
+
+        if not self._a2a_consult_enabled:
+            return web.json_response(
+                self._a2a_consult_contract(
+                    error="a2a_consult is disabled; use durable A2A inbox/work_request flow",
+                    evidence=["direct A2A consult is disabled by API server configuration"],
+                    risks=["direct consult bypass was blocked before any remote run started"],
+                    next_action="send a durable inbox work_request/handoff and wait for a receipt",
+                    elapsed_seconds=elapsed(),
+                ),
+                status=403,
+            )
+
+        payload: Any = None
 
         try:
             payload = await request.json()
@@ -1218,11 +1234,65 @@ class APIServerAdapter(BasePlatformAdapter):
 
         External UIs and orchestrators use this endpoint to discover the API
         server's plugin-safe contract without scraping docs or assuming that
-        every Hermes version exposes the same endpoints.
+        every Hermes version exposes the same endpoints.  The deprecated direct
+        A2A consult escape hatch is only advertised when explicitly enabled.
         """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        features = {
+            "chat_completions": True,
+            "chat_completions_streaming": True,
+            "responses_api": True,
+            "responses_streaming": True,
+            "run_submission": True,
+            "run_status": True,
+            "run_events_sse": True,
+            "run_stop": True,
+            "run_approval_response": True,
+            "a2a_consult": self._a2a_consult_enabled,
+            "tool_progress_events": True,
+            "approval_events": True,
+            "session_resources": True,
+            "session_chat": True,
+            "session_chat_streaming": True,
+            "session_fork": True,
+            "admin_config_rw": False,
+            "jobs_admin": False,
+            "memory_write_api": False,
+            "skills_api": True,
+            "audio_api": False,
+            "realtime_voice": False,
+            "session_continuity_header": "X-Hermes-Session-Id",
+            "session_key_header": "X-Hermes-Session-Key",
+            "cors": bool(self._cors_origins),
+        }
+        endpoints = {
+            "health": {"method": "GET", "path": "/health"},
+            "health_detailed": {"method": "GET", "path": "/health/detailed"},
+            "models": {"method": "GET", "path": "/v1/models"},
+            "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+            "responses": {"method": "POST", "path": "/v1/responses"},
+            "runs": {"method": "POST", "path": "/v1/runs"},
+            "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+            "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+            "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+            "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+            "skills": {"method": "GET", "path": "/v1/skills"},
+            "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+            "sessions": {"method": "GET", "path": "/api/sessions"},
+            "session_create": {"method": "POST", "path": "/api/sessions"},
+            "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
+            "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+            "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+            "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+            "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+            "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+            "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+        }
+        if self._a2a_consult_enabled:
+            endpoints["a2a_consult"] = {"method": "POST", "path": "/v1/a2a/consult"}
 
         return web.json_response({
             "object": "hermes.api_server.capabilities",
@@ -1242,57 +1312,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "explicit split-runtime mode is enabled."
                 ),
             },
-            "features": {
-                "chat_completions": True,
-                "chat_completions_streaming": True,
-                "responses_api": True,
-                "responses_streaming": True,
-                "run_submission": True,
-                "run_status": True,
-                "run_events_sse": True,
-                "run_stop": True,
-                "run_approval_response": True,
-                "a2a_consult": True,
-                "tool_progress_events": True,
-                "approval_events": True,
-                "session_resources": True,
-                "session_chat": True,
-                "session_chat_streaming": True,
-                "session_fork": True,
-                "admin_config_rw": False,
-                "jobs_admin": False,
-                "memory_write_api": False,
-                "skills_api": True,
-                "audio_api": False,
-                "realtime_voice": False,
-                "session_continuity_header": "X-Hermes-Session-Id",
-                "session_key_header": "X-Hermes-Session-Key",
-                "cors": bool(self._cors_origins),
-            },
-            "endpoints": {
-                "health": {"method": "GET", "path": "/health"},
-                "health_detailed": {"method": "GET", "path": "/health/detailed"},
-                "models": {"method": "GET", "path": "/v1/models"},
-                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
-                "responses": {"method": "POST", "path": "/v1/responses"},
-                "runs": {"method": "POST", "path": "/v1/runs"},
-                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
-                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
-                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
-                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "a2a_consult": {"method": "POST", "path": "/v1/a2a/consult"},
-                "skills": {"method": "GET", "path": "/v1/skills"},
-                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
-                "sessions": {"method": "GET", "path": "/api/sessions"},
-                "session_create": {"method": "POST", "path": "/api/sessions"},
-                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
-                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
-                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
-                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
-                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
-                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
-                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
-            },
+            "features": features,
+            "endpoints": endpoints,
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":

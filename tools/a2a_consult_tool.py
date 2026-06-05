@@ -1,13 +1,15 @@
-"""Agent-to-agent consultation tool backed by the API server /v1/a2a/consult wrapper.
+"""Deprecated agent-to-agent consultation tool.
 
-This is intentionally an ephemeral consultation lane, not a durable task queue.
-Kanban remains the source of truth for multi-step or interruptible work.
+Normal A2A coordination is inbox-first and durable.  This direct consult helper
+is an explicit migration/debug escape hatch and only appears when the API server
+platform opts in with ``a2a_consult_enabled``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Mapping
 
 from tools.registry import registry, tool_error
@@ -16,15 +18,11 @@ from tools.registry import registry, tool_error
 A2A_CONSULT_SCHEMA = {
     "name": "a2a_consult",
     "description": (
-        "Ask a configured Hermes co-agent for a private bounded consultation via the "
-        "API/A2A lane. The tool starts a remote /v1/runs job, polls until terminal "
-        "completion or timeout, and returns the final contract to this agent so it can "
-        "surface exactly one summary in the current origin channel. Use kind='handoff' "
-        "or kind='state_update' to package compact state, decisions, context, open "
-        "questions, and evidence links into the agreed A2A envelope; the receiver is "
-        "asked to record a lightweight local todo/state pointer before ACKing. Use this for "
-        "quick advice/review or compact state transfer; use Kanban for durable "
-        "multi-step work. Never include secrets."
+        "Deprecated migration/debug escape hatch for private bounded A2A "
+        "consultation via the API server. Normal A2A coordination must use the "
+        "durable inbox/work_request flow with receipts; this direct lane is hidden "
+        "unless the API server explicitly enables a2a_consult_enabled. Never "
+        "include secrets."
     ),
     "parameters": {
         "type": "object",
@@ -110,23 +108,65 @@ A2A_CONSULT_SCHEMA = {
     },
 }
 
+_A2A_CONSULT_DISABLED_MESSAGE = (
+    "a2a_consult is disabled; use the durable A2A inbox/work_request flow with receipts"
+)
 
-def _load_api_server_a2a_targets() -> Mapping[str, Any]:
-    """Load configured A2A targets from the API server platform config."""
+
+def _coerce_config_bool(value: Any, default: bool = False) -> bool:
+    """Normalize bool-ish config/env values for the consult migration gate."""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _load_api_server_a2a_settings() -> tuple[Mapping[str, Any], bool]:
+    """Load configured A2A targets plus the explicit consult opt-in flag."""
 
     from gateway.config import Platform, load_gateway_config
 
     config = load_gateway_config()
     api_config = config.platforms.get(Platform.API_SERVER)
     if not api_config or not api_config.enabled:
-        return {}
-    return (api_config.extra or {}).get("a2a_targets", {}) or {}
+        return {}, False
+    extra = api_config.extra or {}
+    raw_enabled = extra.get("a2a_consult_enabled")
+    if raw_enabled is None:
+        raw_enabled = os.getenv("API_SERVER_A2A_CONSULT_ENABLED")
+    enabled = _coerce_config_bool(raw_enabled, default=False)
+    return (extra.get("a2a_targets", {}) or {}), enabled
+
+
+def _load_api_server_a2a_targets() -> Mapping[str, Any]:
+    """Load configured A2A targets from the API server platform config."""
+
+    targets, _enabled = _load_api_server_a2a_settings()
+    return targets
+
+
+def _api_server_a2a_consult_enabled() -> bool:
+    """Return whether the direct consult escape hatch is explicitly enabled."""
+
+    _targets, enabled = _load_api_server_a2a_settings()
+    return enabled
 
 
 def check_requirements() -> bool:
     try:
         raw_targets = _load_api_server_a2a_targets()
-        return bool(raw_targets)
+        return bool(raw_targets) and _api_server_a2a_consult_enabled()
     except Exception:
         return False
 
@@ -173,6 +213,9 @@ def a2a_consult_tool(args, **kw):
         # because humans expect a co-agent to finish short advice in one turn.
         payload.setdefault("timeout_seconds", 60)
         payload.setdefault("poll_interval_seconds", 0.5)
+
+        if not _api_server_a2a_consult_enabled():
+            return tool_error(_A2A_CONSULT_DISABLED_MESSAGE)
 
         raw_targets = _load_api_server_a2a_targets()
         targets = normalize_targets(raw_targets)

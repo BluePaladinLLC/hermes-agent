@@ -192,7 +192,7 @@ TOOLSETS = {
     },
 
     "a2a": {
-        "description": "Agent-to-agent consult helper: bounded co-agent requests via configured API/A2A targets",
+        "description": "Deprecated direct A2A consult escape hatch; normal agent coordination uses durable inbox/work_request receipts",
         "tools": ["a2a_consult"],
         "includes": []
     },
