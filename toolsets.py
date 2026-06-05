@@ -191,6 +191,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "a2a": {
+        "description": "Agent-to-agent consult helper: bounded co-agent requests via configured API/A2A targets",
+        "tools": ["a2a_consult"],
+        "includes": []
+    },
+
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",

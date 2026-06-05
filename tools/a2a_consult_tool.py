@@ -196,7 +196,7 @@ def a2a_consult_tool(args, **kw):
 
 registry.register(
     name="a2a_consult",
-    toolset="messaging",
+    toolset="a2a",
     schema=A2A_CONSULT_SCHEMA,
     handler=lambda args, **kw: a2a_consult_tool(args, **kw),
     check_fn=check_requirements,

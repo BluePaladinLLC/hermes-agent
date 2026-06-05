@@ -9,6 +9,27 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+
+def _safe_extract(tf: tarfile.TarFile, root: Path) -> None:
+    """Extract tar members into root after rejecting unsafe paths/links."""
+
+    root = root.resolve()
+    for member in tf.getmembers():
+        member_name = member.name
+        target = (root / member_name).resolve()
+        if not str(target).startswith(str(root) + "/"):
+            raise SystemExit(f"unsafe archive member path: {member_name}")
+        if member.issym() or member.islnk():
+            link_target = Path(member.linkname)
+            if link_target.is_absolute():
+                raise SystemExit(f"unsafe archive link target: {member_name}")
+            resolved_link = (target.parent / link_target).resolve()
+            if not str(resolved_link).startswith(str(root) + "/"):
+                raise SystemExit(f"unsafe archive link target: {member_name}")
+        if member.isdev():
+            raise SystemExit(f"unsafe archive device entry: {member_name}")
+    tf.extractall(root)
+
 REQUIRED_RUNTIME_FILES = [
     "gateway/a2a_valkey.py",
     "gateway/a2a_envelope.py",
@@ -46,7 +67,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         with tarfile.open(archive, "r:gz") as tf:
-            tf.extractall(root)
+            _safe_extract(tf, root)
         dirs = [p for p in root.iterdir() if p.is_dir()]
         if len(dirs) != 1:
             raise SystemExit(f"expected one top-level directory, found {len(dirs)}")
