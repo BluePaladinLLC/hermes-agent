@@ -1,0 +1,10 @@
+{
+  "archive": "/home/synapse/audits/a2a-recovery-artifacts/a2a-pons-runtime-export-20260604T195940Z.tar.gz",
+  "archive_sha256": "7a1d4d84c36321dd1bb06cb13a6dad9fa5b8c42967753a113aee876c0a71a3fa",
+  "top_level": "a2a-pons-runtime-export-20260604T195940Z",
+  "file_count": 34,
+  "runtime_missing": [],
+  "evidence_missing": [],
+  "has_test_output": true,
+  "test_output_tail": "\nadapter = <gateway.platforms.api_server.APIServerAdapter object at 0x7c652f42af90>\n\n    def _create_a2a_app(adapter):\n        app = web.Application()\n>       app.router.add_post(\"/v1/a2a/consult\", adapter._handle_a2a_consult)\n                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       AttributeError: 'APIServerAdapter' object has no attribute '_handle_a2a_consult'\n\ntests/gateway/test_a2a_consult_wrapper.py:733: AttributeError\n=========================== short test summary info ============================\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_rejects_malformed_json_with_contract\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_maps_zero_timeout_to_validation_400\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_rejects_non_object_payload_with_contract\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_redacts_secret_like_target_in_rejection_contract\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_adds_delivery_timing_and_failure_reason\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_requires_auth_for_private_consult\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_maps_unknown_target_to_404\nFAILED tests/gateway/test_a2a_consult_wrapper.py::test_api_route_maps_invalid_timeout_to_validation_400\n8 failed, 48 passed in 0.93s"
+}
