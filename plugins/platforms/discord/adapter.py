@@ -51,6 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.artifact_discord_panel import render_artifact_drawer_panel, sample_discord_drawer_artifacts
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2960,6 +2961,32 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    async def _handle_artifacts_slash(
+        self,
+        interaction: discord.Interaction,
+        action: str = "latest",
+        query: str = "",
+    ) -> None:
+        """Render the zero-blast artifact drawer panel directly inside Discord."""
+        if not await self._check_slash_authorization(interaction, "/artifacts"):
+            return
+        channel_id = str(getattr(interaction, "channel_id", "") or getattr(getattr(interaction, "channel", None), "id", "") or "current")
+        thread_id = None
+        channel = getattr(interaction, "channel", None)
+        if channel is not None and getattr(channel, "parent_id", None):
+            thread_id = str(getattr(channel, "id", ""))
+        artifacts = sample_discord_drawer_artifacts(chat_id=channel_id, thread_id=thread_id)
+        selected_id = None
+        action_text = (action or "latest").strip()
+        if action_text.startswith("open "):
+            selected_id = action_text.split(None, 1)[1].strip()
+        search_text = query.strip() or (action_text.split(None, 1)[1].strip() if action_text.startswith("search ") and len(action_text.split(None, 1)) > 1 else "")
+        if search_text:
+            needle = search_text.lower()
+            artifacts = [item for item in artifacts if needle in f"{item.title} {item.summary} {' '.join(item.tags)}".lower()]
+        panel = render_artifact_drawer_panel(artifacts, selected_id=selected_id, query=search_text or None)
+        await interaction.response.send_message(panel, ephemeral=True)
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -3111,6 +3138,14 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+
+        @tree.command(name="artifacts", description="Open the in-Discord artifact drawer MVP")
+        @discord.app_commands.describe(
+            action="latest, open <artifact_id>, or search <text>",
+            query="Optional search text",
+        )
+        async def slash_artifacts(interaction: discord.Interaction, action: str = "latest", query: str = ""):
+            await self._handle_artifacts_slash(interaction, action, query)
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
