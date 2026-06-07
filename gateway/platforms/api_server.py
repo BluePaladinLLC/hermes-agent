@@ -34,6 +34,7 @@ Requires:
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.artifacts import ArtifactStore
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -718,6 +720,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self.artifacts = ArtifactStore()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1232,6 +1235,73 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------------------
+    # /api/artifacts — read-only artifact drawer/card contract API
+    # ------------------------------------------------------------------
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts — list artifacts scoped for drawer UIs."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        params = request.rel_url.query
+        records = self.artifacts.list(
+            platform=params.get("platform"),
+            chat_id=params.get("chat_id"),
+            thread_id=params.get("thread_id"),
+            session_id=params.get("session_id"),
+            kind=params.get("kind"),
+            query=params.get("q") or params.get("query"),
+        )
+        return web.json_response({"object": "list", "artifacts": [r.to_drawer_payload() for r in records]})
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts/{artifact_id} — return one artifact payload."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        artifact_id = request.match_info.get("artifact_id", "")
+        record = self.artifacts.get(artifact_id)
+        if record is None:
+            return web.json_response(_openai_error(f"Artifact not found: {artifact_id}", code="artifact_not_found"), status=404)
+        return web.json_response({"artifact": record.to_drawer_payload()})
+
+    async def _handle_artifact_drawer(self, request: "web.Request") -> "web.Response":
+        """GET /artifacts[/id] — hosted artifact drawer shell."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        params = request.rel_url.query
+        initial_state = {
+            "artifactId": request.match_info.get("artifact_id"),
+            "platform": params.get("platform"),
+            "chatId": params.get("chat_id"),
+            "threadId": params.get("thread_id"),
+            "sessionId": params.get("session_id"),
+            "apiBase": "/api/artifacts",
+        }
+        state_json = json.dumps(initial_state, indent=2)
+        escaped_state = html.escape(state_json, quote=False)
+        body = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\" />
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+<title>Discord Artifact Drawer</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:#f0ecff;background:radial-gradient(circle at 24% 16%,rgba(132,83,255,.34),transparent 31%),radial-gradient(circle at 83% 2%,rgba(70,106,255,.23),transparent 28%),linear-gradient(145deg,#050408,#131220 48%,#070812);}}main{{min-height:100vh;display:grid;grid-template-columns:1fr min(430px,42vw);}}.chat{{padding:28px;color:#cfc8e8}}.drawer{{background:linear-gradient(180deg,rgba(22,19,35,.92),rgba(12,10,20,.94));border-left:1px solid rgba(255,255,255,.08);box-shadow:-30px 0 70px rgba(0,0,0,.36);backdrop-filter:blur(30px);padding:18px;}}.mark{{width:40px;height:40px;border-radius:14px;background:linear-gradient(145deg,#5c4dff,#ad6cff);display:grid;place-items:center;font-weight:900}}h1{{font-size:18px;margin:14px 0 6px}}p{{color:#aaa2c2;line-height:1.45}}pre{{white-space:pre-wrap;background:rgba(255,255,255,.055);border:1px solid rgba(214,203,255,.12);border-radius:14px;padding:12px;color:#dcd6ef}}.card{{margin-top:12px;border:1px solid rgba(214,203,255,.12);background:rgba(255,255,255,.055);border-radius:16px;padding:13px}}@media(max-width:900px){{main{{grid-template-columns:1fr}}.drawer{{min-height:70vh}}}}
+</style>
+</head>
+<body>
+<script>window.__HERMES_ARTIFACT_DRAWER__ = {state_json};</script>
+<main>
+<section class=\"chat\"><h2>Hermes Artifact Surface</h2><p>This is the hosted drawer shell opened from Discord artifact cards.</p></section>
+<aside class=\"drawer\"><div class=\"mark\">◆</div><h1>Discord Artifact Drawer</h1><p>Glassy artifact browser shell. It hydrates from <code>/api/artifacts</code> using the scope below.</p><div class=\"card\"><strong>Initial scope</strong><pre>{escaped_state}</pre></div></aside>
+</main>
+</body>
+</html>"""
+        return web.Response(text=body, content_type="text/html")
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4096,6 +4166,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # Artifact browser / Discord receipt shared contract
+            self._app.router.add_get("/artifacts", self._handle_artifact_drawer)
+            self._app.router.add_get("/artifacts/{artifact_id}", self._handle_artifact_drawer)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_get("/api/artifacts/{artifact_id}", self._handle_get_artifact)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
