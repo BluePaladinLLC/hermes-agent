@@ -52,6 +52,20 @@ The standalone visual prototype is also snapshotted under `prototype/` as inert 
 
 These preserve the dark translucent Discord drawer direction in-repo without activating it in the live gateway.
 
+For hands-on MVP review without touching the live gateway, run the local preview server:
+
+```bash
+PYTHONPATH=. python .planning/spikes/001-discord-artifact-surface/preview_server.py --host 127.0.0.1 --port 8877
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8877/artifacts/art_seeded?platform=discord&chat_id=chan-1&thread_id=axon
+```
+
+The preview server seeds sample artifacts in-memory only; it does not send Discord messages or enable automatic capture.
+
 ## Verdict: PARTIAL / PROCEED
 
 ### What worked
