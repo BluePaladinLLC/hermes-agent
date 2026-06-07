@@ -134,3 +134,58 @@ def test_api_server_serves_artifact_drawer_html_shell():
 
     import asyncio
     asyncio.run(run_case())
+
+
+def test_api_server_can_seed_artifact_and_render_discord_card_payload():
+    async def run_case():
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        app = web.Application()
+        app.router.add_post("/api/artifacts", adapter._handle_create_artifact)
+        app.router.add_get("/api/artifacts/{artifact_id}", adapter._handle_get_artifact)
+        app.router.add_get("/api/artifacts/{artifact_id}/discord-card", adapter._handle_get_artifact_discord_card)
+
+        payload = {
+            "artifact_id": "art_seeded",
+            "kind": "mockup",
+            "title": "Seeded drawer MVP",
+            "summary": "Manual zero-blast seed artifact.",
+            "scope": {"platform": "discord", "chat_id": "chan-1", "thread_id": "axon"},
+            "owner": "Axon",
+            "evidence": ["manual seed route"],
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/artifacts", json=payload)
+            assert resp.status == 201
+            created = await resp.json()
+            assert created["artifact"]["artifact_id"] == "art_seeded"
+
+            resp = await cli.get("/api/artifacts/art_seeded/discord-card?drawer_base_url=http://127.0.0.1:8642")
+            assert resp.status == 200
+            card = await resp.json()
+            assert card["artifact_id"] == "art_seeded"
+            assert card["discord"]["embed"]["title"] == "◆ Seeded drawer MVP"
+            assert card["discord"]["components"][0]["url"] == "http://127.0.0.1:8642/artifacts/art_seeded"
+
+    import asyncio
+    asyncio.run(run_case())
+
+
+def test_artifact_drawer_shell_contains_client_hydration_code():
+    async def run_case():
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        app = web.Application()
+        app.router.add_get("/artifacts/{artifact_id}", adapter._handle_artifact_drawer)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/artifacts/art_123?platform=discord&chat_id=chan-1&thread_id=axon")
+            assert resp.status == 200
+            body = await resp.text()
+            assert "artifact-list" in body
+            assert "artifact-detail" in body
+            assert "fetch(artifactApiUrl)" in body
+            assert "renderArtifacts" in body
+            assert '"threadId": "axon"' in body
+
+    import asyncio
+    asyncio.run(run_case())

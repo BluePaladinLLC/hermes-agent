@@ -54,7 +54,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.artifacts import ArtifactStore
+from gateway.artifacts import ArtifactRecord, ArtifactStore
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -1256,6 +1256,21 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return web.json_response({"object": "list", "artifacts": [r.to_drawer_payload() for r in records]})
 
+    async def _handle_create_artifact(self, request: "web.Request") -> "web.Response":
+        """POST /api/artifacts — manually seed a zero-blast artifact."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, body_err = await self._read_json_body(request)
+        if body_err:
+            return body_err
+        try:
+            record = ArtifactRecord.from_payload(body)
+            self.artifacts.upsert(record)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_artifact"), status=400)
+        return web.json_response({"artifact": record.to_drawer_payload()}, status=201)
+
     async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
         """GET /api/artifacts/{artifact_id} — return one artifact payload."""
         auth_err = self._check_auth(request)
@@ -1266,6 +1281,18 @@ class APIServerAdapter(BasePlatformAdapter):
         if record is None:
             return web.json_response(_openai_error(f"Artifact not found: {artifact_id}", code="artifact_not_found"), status=404)
         return web.json_response({"artifact": record.to_drawer_payload()})
+
+    async def _handle_get_artifact_discord_card(self, request: "web.Request") -> "web.Response":
+        """GET /api/artifacts/{artifact_id}/discord-card — render Discord receipt JSON."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        artifact_id = request.match_info.get("artifact_id", "")
+        record = self.artifacts.get(artifact_id)
+        if record is None:
+            return web.json_response(_openai_error(f"Artifact not found: {artifact_id}", code="artifact_not_found"), status=404)
+        base_url = request.rel_url.query.get("drawer_base_url") or f"{request.scheme}://{request.host}"
+        return web.json_response({"artifact_id": artifact_id, "discord": record.to_discord_card(base_url)})
 
     async def _handle_artifact_drawer(self, request: "web.Request") -> "web.Response":
         """GET /artifacts[/id] — hosted artifact drawer shell."""
@@ -1290,15 +1317,42 @@ class APIServerAdapter(BasePlatformAdapter):
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
 <title>Discord Artifact Drawer</title>
 <style>
-*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:#f0ecff;background:radial-gradient(circle at 24% 16%,rgba(132,83,255,.34),transparent 31%),radial-gradient(circle at 83% 2%,rgba(70,106,255,.23),transparent 28%),linear-gradient(145deg,#050408,#131220 48%,#070812);}}main{{min-height:100vh;display:grid;grid-template-columns:1fr min(430px,42vw);}}.chat{{padding:28px;color:#cfc8e8}}.drawer{{background:linear-gradient(180deg,rgba(22,19,35,.92),rgba(12,10,20,.94));border-left:1px solid rgba(255,255,255,.08);box-shadow:-30px 0 70px rgba(0,0,0,.36);backdrop-filter:blur(30px);padding:18px;}}.mark{{width:40px;height:40px;border-radius:14px;background:linear-gradient(145deg,#5c4dff,#ad6cff);display:grid;place-items:center;font-weight:900}}h1{{font-size:18px;margin:14px 0 6px}}p{{color:#aaa2c2;line-height:1.45}}pre{{white-space:pre-wrap;background:rgba(255,255,255,.055);border:1px solid rgba(214,203,255,.12);border-radius:14px;padding:12px;color:#dcd6ef}}.card{{margin-top:12px;border:1px solid rgba(214,203,255,.12);background:rgba(255,255,255,.055);border-radius:16px;padding:13px}}@media(max-width:900px){{main{{grid-template-columns:1fr}}.drawer{{min-height:70vh}}}}
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:#f0ecff;background:radial-gradient(circle at 24% 16%,rgba(132,83,255,.34),transparent 31%),radial-gradient(circle at 83% 2%,rgba(70,106,255,.23),transparent 28%),linear-gradient(145deg,#050408,#131220 48%,#070812);}}main{{min-height:100vh;display:grid;grid-template-columns:1fr min(430px,42vw);}}.chat{{padding:28px;color:#cfc8e8}}.drawer{{background:linear-gradient(180deg,rgba(22,19,35,.92),rgba(12,10,20,.94));border-left:1px solid rgba(255,255,255,.08);box-shadow:-30px 0 70px rgba(0,0,0,.36);backdrop-filter:blur(30px);padding:18px;}}.mark{{width:40px;height:40px;border-radius:14px;background:linear-gradient(145deg,#5c4dff,#ad6cff);display:grid;place-items:center;font-weight:900}}h1{{font-size:18px;margin:14px 0 6px}}p{{color:#aaa2c2;line-height:1.45}}button{{font:inherit;color:inherit}}.artifact-list{{display:grid;gap:10px;margin-top:16px}}.artifact-item{{text-align:left;border:1px solid rgba(214,203,255,.12);background:rgba(255,255,255,.055);border-radius:16px;padding:12px;cursor:pointer}}.artifact-item:hover,.artifact-item.active{{border-color:rgba(173,108,255,.75);background:rgba(143,109,255,.16)}}.artifact-detail{{margin-top:14px;border:1px solid rgba(214,203,255,.12);background:rgba(255,255,255,.055);border-radius:16px;padding:14px;min-height:180px}}.pill{{display:inline-flex;margin-right:6px;margin-top:6px;padding:4px 8px;border-radius:999px;background:rgba(143,109,255,.2);color:#ded7ff;font-size:12px}}pre{{white-space:pre-wrap;background:rgba(255,255,255,.055);border:1px solid rgba(214,203,255,.12);border-radius:14px;padding:12px;color:#dcd6ef}}.card{{margin-top:12px;border:1px solid rgba(214,203,255,.12);background:rgba(255,255,255,.055);border-radius:16px;padding:13px}}@media(max-width:900px){{main{{grid-template-columns:1fr}}.drawer{{min-height:70vh}}}}
 </style>
 </head>
 <body>
 <script>window.__HERMES_ARTIFACT_DRAWER__ = {state_json};</script>
 <main>
-<section class=\"chat\"><h2>Hermes Artifact Surface</h2><p>This is the hosted drawer shell opened from Discord artifact cards.</p></section>
-<aside class=\"drawer\"><div class=\"mark\">◆</div><h1>Discord Artifact Drawer</h1><p>Glassy artifact browser shell. It hydrates from <code>/api/artifacts</code> using the scope below.</p><div class=\"card\"><strong>Initial scope</strong><pre>{escaped_state}</pre></div></aside>
+<section class=\"chat\"><h2>Hermes Artifact Surface</h2><p>This is the hosted drawer shell opened from Discord artifact cards. Manual seed only; no automatic capture is active.</p><div class=\"card\"><strong>Initial scope</strong><pre>{escaped_state}</pre></div></section>
+<aside class=\"drawer\"><div class=\"mark\">◆</div><h1>Discord Artifact Drawer</h1><p>Hydrates from <code>/api/artifacts</code> and renders scoped artifacts.</p><div id=\"artifact-list\" class=\"artifact-list\">Loading artifacts…</div><section id=\"artifact-detail\" class=\"artifact-detail\">Select an artifact.</section></aside>
 </main>
+<script>
+const state = window.__HERMES_ARTIFACT_DRAWER__;
+const qs = new URLSearchParams();
+if (state.platform) qs.set('platform', state.platform);
+if (state.chatId) qs.set('chat_id', state.chatId);
+if (state.threadId) qs.set('thread_id', state.threadId);
+if (state.sessionId) qs.set('session_id', state.sessionId);
+const artifactApiUrl = `${{state.apiBase}}?${{qs.toString()}}`;
+function escapeHtml(value) {{ return String(value ?? '').replace(/[&<>\"]/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}}[ch])); }}
+function renderArtifactDetail(artifact) {{
+  const detail = document.getElementById('artifact-detail');
+  if (!artifact) {{ detail.textContent = 'No artifact selected.'; return; }}
+  const evidence = (artifact.evidence || []).map(item => `<span class=\"pill\">${{escapeHtml(item)}}</span>`).join('');
+  detail.innerHTML = `<h2>${{escapeHtml(artifact.title)}}</h2><p>${{escapeHtml(artifact.summary)}}</p><div><span class=\"pill\">${{escapeHtml(artifact.kind)}}</span><span class=\"pill\">${{escapeHtml(artifact.scope?.label)}}</span></div>${{evidence ? `<h3>Evidence</h3><div>${{evidence}}</div>` : ''}}`;
+}}
+function renderArtifacts(artifacts) {{
+  const list = document.getElementById('artifact-list');
+  if (!artifacts.length) {{ list.textContent = 'No artifacts seeded for this scope yet.'; renderArtifactDetail(null); return; }}
+  list.innerHTML = artifacts.map(item => `<button class=\"artifact-item\" data-artifact-id=\"${{escapeHtml(item.artifact_id)}}\"><strong>${{escapeHtml(item.title)}}</strong><br><small>${{escapeHtml(item.kind)}} · ${{escapeHtml(item.scope?.label)}}</small></button>`).join('');
+  const selected = artifacts.find(item => item.artifact_id === state.artifactId) || artifacts[0];
+  renderArtifactDetail(selected);
+  list.querySelectorAll('.artifact-item').forEach(button => button.addEventListener('click', () => renderArtifactDetail(artifacts.find(item => item.artifact_id === button.dataset.artifactId))));
+}}
+fetch(artifactApiUrl).then(resp => resp.json()).then(data => renderArtifacts(data.artifacts || [])).catch(error => {{
+  document.getElementById('artifact-list').textContent = `Artifact API unavailable: ${{error.message}}`;
+}});
+</script>
 </body>
 </html>"""
         return web.Response(text=body, content_type="text/html")
@@ -4170,6 +4224,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/artifacts", self._handle_artifact_drawer)
             self._app.router.add_get("/artifacts/{artifact_id}", self._handle_artifact_drawer)
             self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_post("/api/artifacts", self._handle_create_artifact)
+            self._app.router.add_get("/api/artifacts/{artifact_id}/discord-card", self._handle_get_artifact_discord_card)
             self._app.router.add_get("/api/artifacts/{artifact_id}", self._handle_get_artifact)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)

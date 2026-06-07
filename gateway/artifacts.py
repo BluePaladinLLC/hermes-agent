@@ -63,6 +63,34 @@ class ArtifactRecord:
             return self.kind.value
         return str(self.kind).strip().lower()
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ArtifactRecord":
+        """Build an artifact from an API/client payload."""
+        scope_payload = payload.get("scope") or {}
+        if not isinstance(scope_payload, dict):
+            raise ValueError("scope must be an object")
+        record = cls(
+            artifact_id=str(payload.get("artifact_id") or payload.get("id") or ""),
+            kind=str(payload.get("kind") or ""),
+            title=str(payload.get("title") or ""),
+            summary=str(payload.get("summary") or ""),
+            scope=ArtifactScope(
+                platform=str(scope_payload.get("platform") or ""),
+                chat_id=str(scope_payload.get("chat_id") or ""),
+                thread_id=scope_payload.get("thread_id"),
+                session_id=scope_payload.get("session_id"),
+            ),
+            owner=str(payload.get("owner") or "Hermes"),
+            created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            preview_url=payload.get("preview_url"),
+            local_path=payload.get("local_path"),
+            evidence=[str(item) for item in payload.get("evidence") or []],
+            actions=[str(item) for item in payload.get("actions") or ["open", "copy_link", "pin", "handoff"]],
+            tags=[str(item) for item in payload.get("tags") or []],
+        )
+        record.validate()
+        return record
+
     def validate(self) -> None:
         required = {
             "artifact_id": self.artifact_id,
