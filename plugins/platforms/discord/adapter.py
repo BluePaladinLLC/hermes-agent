@@ -51,7 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from gateway.artifact_discord_panel import render_artifact_drawer_panel, sample_discord_drawer_artifacts
+from gateway.artifact_discord_panel import discover_local_artifacts, render_artifact_drawer_panel, sample_discord_drawer_artifacts
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2975,15 +2975,17 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = getattr(interaction, "channel", None)
         if channel is not None and getattr(channel, "parent_id", None):
             thread_id = str(getattr(channel, "id", ""))
-        artifacts = sample_discord_drawer_artifacts(chat_id=channel_id, thread_id=thread_id)
         selected_id = None
         action_text = (action or "latest").strip()
         if action_text.startswith("open "):
             selected_id = action_text.split(None, 1)[1].strip()
         search_text = query.strip() or (action_text.split(None, 1)[1].strip() if action_text.startswith("search ") and len(action_text.split(None, 1)) > 1 else "")
-        if search_text:
-            needle = search_text.lower()
-            artifacts = [item for item in artifacts if needle in f"{item.title} {item.summary} {' '.join(item.tags)}".lower()]
+        artifacts = discover_local_artifacts(chat_id=channel_id, thread_id=thread_id, query=search_text or None)
+        if not artifacts:
+            artifacts = sample_discord_drawer_artifacts(chat_id=channel_id, thread_id=thread_id)
+            if search_text:
+                needle = search_text.lower()
+                artifacts = [item for item in artifacts if needle in f"{item.title} {item.summary} {' '.join(item.tags)}".lower()]
         panel = render_artifact_drawer_panel(artifacts, selected_id=selected_id, query=search_text or None)
         await interaction.response.send_message(panel, ephemeral=True)
 
