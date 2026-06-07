@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Discord Artifact Drawer — Standalone</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="guild-rail" aria-label="Servers">
+      <button class="guild active">DVA</button>
+      <button class="guild">BP</button>
+      <button class="guild">A2A</button>
+      <button class="guild ghost">+</button>
+    </aside>
+    <aside class="channel-rail" aria-label="Channels">
+      <div class="server-name">Cerebrum</div>
+      <div class="section-label">Personal</div>
+      <button class="channel active" data-channel="axon"># axon</button>
+      <button class="channel" data-channel="general-personal"># general-personal</button>
+      <div class="section-label">Ops</div>
+      <button class="channel" data-channel="handoffs"># handoffs</button>
+      <button class="channel" data-channel="canaries"># canaries</button>
+      <div class="section-label">Work</div>
+      <button class="channel" data-channel="artifacts"># artifacts</button>
+      <button class="channel" data-channel="a2a"># a2a</button>
+    </aside>
+    <main class="conversation">
+      <header class="topbar">
+        <div class="hash">#</div>
+        <div>
+          <div class="channel-title" id="channelTitle">axon</div>
+          <div class="channel-subtitle">artifact-aware standalone prototype</div>
+        </div>
+        <div class="topbar-actions">
+          <label class="density-toggle"><span>Density</span><select id="densitySelect"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+          <label class="alpha-toggle"><span>Glass</span><input id="glassRange" type="range" min="72" max="98" value="90" /></label>
+          <button class="button secondary" id="toggleDrawer">Artifacts</button>
+          <button class="button primary" id="pinArtifact">Pin current</button>
+        </div>
+      </header>
+      <section class="messages" id="messages"></section>
+      <footer class="composer"><span>Message #<span id="composerChannel">axon</span></span><span class="composer-meta">F23 Prompt Assist · artifact rail active</span></footer>
+      <aside class="artifact-drawer open" id="artifactDrawer" aria-label="Artifacts drawer">
+        <button class="drawer-rail" id="drawerRail" title="Toggle artifact drawer">
+          <span class="rail-word">ARTIFACTS</span>
+          <span class="rail-icon">◆</span>
+          <span class="rail-count" id="railCount">0</span>
+          <span class="rail-icon">⌕</span>
+          <span class="rail-icon">↗</span>
+        </button>
+        <section class="drawer-panel">
+          <div class="drawer-list" id="drawerListView">
+            <div class="drawer-header">
+              <div class="drawer-mark">◆</div>
+              <div><h1>Artifacts in <span id="drawerChannel">#axon</span></h1><p>Channel-scoped files, plans, media, runs, and handoff evidence.</p></div>
+            </div>
+            <div class="tab-row" id="kindTabs"></div>
+            <div class="search-row"><input id="artifactSearch" placeholder="Filter artifacts, evidence, owners..." /><button id="resetFilters">Reset</button></div>
+            <div class="artifact-list" id="artifactList"></div>
+          </div>
+          <div class="drawer-detail" id="drawerDetailView" hidden></div>
+        </section>
+      </aside>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </main>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
