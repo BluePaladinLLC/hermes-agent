@@ -28,6 +28,7 @@ def run_receiver_tick(
     max_idle_ticks: int = 1,
     block_ms: int = 1,
     idle_sleep_seconds: float = 0.0,
+    auth_policy: Any | None = None,
 ) -> dict[str, Any]:
     """Run a bounded receiver tick and return a compact summary.
 
@@ -57,6 +58,7 @@ def run_receiver_tick(
             capabilities=capabilities,
             receipt_journal=receipt_journal,
             block_ms=block_ms,
+            auth_policy=auth_policy,
         )
         if result is None:
             idle_ticks += 1
