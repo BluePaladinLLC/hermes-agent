@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from gateway.a2a_actionable_receiver import A2AActionResult, process_actionable_once
+from gateway.a2a_auth_policy import A2AAuthPolicy, MemoryReplayStore, sign_packet
 
 
 class FakeA2AStore:
@@ -192,6 +193,7 @@ def test_missing_capability_returns_needs_human_without_running_handler():
         capabilities=["openai"],
     )
 
+    assert result is not None
     assert ran is False
     assert result["ack"]["message_type"] == "ack"
     assert result["reply"]["message_type"] == "needs_human"
@@ -242,3 +244,101 @@ def test_lifecycle_ignore_journals_claim_and_fyi_without_reply_loop():
     assert result["ignored"] is True
     assert store.enqueued == []
     assert ["claimed", "fyi_logged"] == [line.split(" | ")[2].split()[0] for line in journal]
+
+
+def _auth_policy():
+    return A2AAuthPolicy(
+        trusted_keys={"pons": {"pons-main": "test-secret"}},
+        grants={"pons": {"axon": {"status", "read_only", "coordination"}}},
+        now=lambda: 1_780_000_010,
+        replay_store=MemoryReplayStore(),
+    )
+
+
+def _signed_message(action_class="status", nonce="n1"):
+    message = _message("work_request", payload={"metadata": {"action_class": action_class}, "body": "hello"})
+    packet = {
+        "message_id": message["message_id"],
+        "sender": message["sender"],
+        "target": message["target"],
+        "topic_id": message["topic_id"],
+        "message_type": message["message_type"],
+        "payload": message["payload"],
+        "metadata": {"action_class": action_class},
+    }
+    sign_packet(packet, key_id="pons-main", secret="test-secret", timestamp=1_780_000_000, nonce=nonce)
+    message["payload"]["metadata"]["auth"] = packet["metadata"]["auth"]
+    return message
+
+
+def test_auth_policy_missing_signature_rejects_before_ack_or_handler():
+    ran = False
+    store = FakeA2AStore(_message("work_request", payload={"metadata": {"action_class": "status"}, "body": "hello"}))
+
+    def handler(message):
+        nonlocal ran
+        ran = True
+        return "should not run"
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": handler},
+        auth_policy=_auth_policy(),
+    )
+
+    assert result is not None
+    assert ran is False
+    assert result["ack"] is None
+    assert result["reply"] is None
+    assert store.enqueued == []
+    assert store.completed == [{"message_id": "msg-1", "status": "failed", "result": "A2A auth rejected: missing_signature"}]
+
+
+def test_auth_policy_valid_signature_allows_handler():
+    store = FakeA2AStore(_signed_message("status"))
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": lambda message: A2AActionResult(message_type="final", body="done")},
+        auth_policy=_auth_policy(),
+    )
+
+    assert result["ack"]["message_type"] == "ack"
+    assert result["started"]["message_type"] == "work_started"
+    assert result["reply"]["message_type"] == "final"
+    assert store.completed[-1] == {"message_id": "msg-1", "status": "completed", "result": "done", "evidence_links": []}
+
+
+def test_auth_policy_signed_but_unauthorized_action_needs_human_before_handler():
+    ran = False
+    store = FakeA2AStore(_signed_message("service_mutation"))
+
+    def handler(message):
+        nonlocal ran
+        ran = True
+        return "should not run"
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": handler},
+        auth_policy=_auth_policy(),
+    )
+
+    assert result is not None
+    assert ran is False
+    assert result["ack"] is None
+    assert result["reply"] is None
+    assert store.enqueued == []
+    assert store.completed == [
+        {
+            "message_id": "msg-1",
+            "status": "needs_human",
+            "result": "A2A policy requires human: action_class_not_authorized:service_mutation",
+        }
+    ]

@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from gateway.a2a_auth_policy import A2AAuthPolicy, AuthDecision, verify_packet
 from gateway.a2a_receipts import format_a2a_receipt
 
 ACTIONABLE_MESSAGE_TYPES = frozenset({"work_request", "handoff", "consult", "question", "answer", "reply_required"})
@@ -77,6 +78,7 @@ def process_actionable_once(
     capabilities: Iterable[str] | None = None,
     receipt_journal: ReceiptJournal | None = None,
     block_ms: int = 1,
+    auth_policy: A2AAuthPolicy | None = None,
 ) -> dict[str, Any] | None:
     """Process one inbound A2A packet as an actionable handoff.
 
@@ -108,6 +110,31 @@ def process_actionable_once(
         )
         receipts.record("fyi_logged", message, status="completed")
         return {"original": original, "ack": None, "started": None, "reply": None, "ignored": True, "receipts": receipts.lines}
+
+    if auth_policy is not None:
+        auth_decision = verify_packet(_auth_packet_from_message(message), auth_policy)
+        if auth_decision == AuthDecision.REJECT:
+            original = store.complete(message_id, status="failed", result=f"A2A auth rejected: {auth_decision.reason}")
+            receipts.record("nack", message, status="failed")
+            return {
+                "original": original,
+                "ack": None,
+                "started": None,
+                "reply": None,
+                "auth_decision": auth_decision,
+                "receipts": receipts.lines,
+            }
+        if auth_decision == AuthDecision.NEEDS_HUMAN:
+            original = store.complete(message_id, status="needs_human", result=f"A2A policy requires human: {auth_decision.reason}")
+            receipts.record("needs_human", message, status="needs_human")
+            return {
+                "original": original,
+                "ack": None,
+                "started": None,
+                "reply": None,
+                "auth_decision": auth_decision,
+                "receipts": receipts.lines,
+            }
 
     if not sender:
         original = store.complete(message_id, status="needs_human", result="Cannot process: original sender is missing")
@@ -261,6 +288,28 @@ def _normalize_action_result(value: A2AActionResult | Mapping[str, Any] | str | 
     if value is None:
         return A2AActionResult(message_type="final", status="completed", body="completed")
     return A2AActionResult(message_type="final", status="completed", body=str(value))
+
+
+def _auth_packet_from_message(message: Mapping[str, Any]) -> dict[str, Any]:
+    payload_value = message.get("payload")
+    payload: Mapping[str, Any] = payload_value if isinstance(payload_value, Mapping) else {}
+    payload_metadata_obj = payload.get("metadata")
+    payload_metadata: Mapping[str, Any] = payload_metadata_obj if isinstance(payload_metadata_obj, Mapping) else {}
+    metadata: dict[str, Any] = dict(payload_metadata)
+    auth_obj = payload.get("auth")
+    if isinstance(auth_obj, Mapping):
+        metadata.setdefault("auth", auth_obj)
+    return {
+        "message_id": message.get("message_id"),
+        "sender": message.get("sender"),
+        "target": message.get("target"),
+        "topic_id": message.get("topic_id"),
+        "message_type": message.get("message_type"),
+        "subject": message.get("subject"),
+        "body": message.get("body"),
+        "payload": payload,
+        "metadata": metadata,
+    }
 
 
 def _requested_capabilities(message: Mapping[str, Any]) -> list[str]:
