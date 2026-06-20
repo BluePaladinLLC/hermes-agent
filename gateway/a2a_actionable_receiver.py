@@ -299,10 +299,14 @@ def _auth_packet_from_message(message: Mapping[str, Any]) -> dict[str, Any]:
     auth_obj = payload.get("auth")
     if isinstance(auth_obj, Mapping):
         metadata.setdefault("auth", auth_obj)
+    targets_obj = message.get("targets")
+    first_target = ""
+    if isinstance(targets_obj, list) and targets_obj:
+        first_target = str(targets_obj[0])
     return {
         "message_id": message.get("message_id"),
         "sender": message.get("sender"),
-        "target": message.get("target"),
+        "target": message.get("target") or first_target,
         "topic_id": message.get("topic_id"),
         "message_type": message.get("message_type"),
         "subject": message.get("subject"),

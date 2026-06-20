@@ -313,6 +313,25 @@ def test_auth_policy_valid_signature_allows_handler():
     assert store.completed[-1] == {"message_id": "msg-1", "status": "completed", "result": "done", "evidence_links": []}
 
 
+def test_auth_policy_accepts_valkey_messages_with_targets_list():
+    message = _signed_message("status")
+    message.pop("target")
+    message["targets"] = ["axon"]
+    store = FakeA2AStore(message)
+
+    result = process_actionable_once(
+        store=store,
+        target="axon",
+        consumer="worker-1",
+        handlers={"work_request": lambda message: A2AActionResult(message_type="final", body="done")},
+        auth_policy=_auth_policy(),
+    )
+
+    assert result is not None
+    assert result["reply"]["message_type"] == "final"
+    assert store.completed[-1]["status"] == "completed"
+
+
 def test_auth_policy_signed_but_unauthorized_action_needs_human_before_handler():
     ran = False
     store = FakeA2AStore(_signed_message("service_mutation"))
