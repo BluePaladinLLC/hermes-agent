@@ -9415,11 +9415,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.display_config import resolve_display_setting
         platform_key = _platform_config_key(event.source.platform)
 
-        # In steer mode the user's text has already been injected into the
-        # active run. Some mobile chat setups want that steering to be silent,
-        # like STT transcript echo suppression: keep the behavior, drop only
-        # the confirmation bubble.
-        if is_steer_mode:
+        # In steer or successful redirect mode the user's text has already
+        # landed in the active run. Some chat surfaces render a native working
+        # indicator instead of a confirmation bubble: keep the behavior, drop
+        # only the chat acknowledgement. Historically this gate covered steer
+        # but not redirect, so ``Redirected current run`` leaked even when
+        # busy_steer_ack_enabled was false.
+        if is_steer_mode or is_redirect_mode:
             steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
             if steer_ack_env is not None:
                 steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
@@ -9433,7 +9435,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 )
             if not steer_ack_enabled:
-                logger.debug("Busy steer ack suppressed for session %s", session_key)
+                logger.debug("Busy steer/redirect ack suppressed for session %s", session_key)
                 return True
 
         self._session_state(session_key).turn.busy_ack_ts = now
