@@ -188,6 +188,35 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
+    @pytest.mark.asyncio
+    async def test_successful_redirect_respects_disabled_steer_ack(self, monkeypatch):
+        """Native activity surfaces suppress redirect chat without dropping input."""
+        import gateway.run as _gr
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", "false")
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="buzz")
+        event = _make_event(text="change direction", platform_val="buzz")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect = MagicMock(return_value=True)
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 16,
+            "max_iterations": 100,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        handled = await runner._handle_active_session_busy_message(event, sk)
+
+        assert handled is True
+        agent.redirect.assert_called_once_with("change direction")
+        adapter._send_with_retry.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):

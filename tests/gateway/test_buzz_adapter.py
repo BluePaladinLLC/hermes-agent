@@ -25,6 +25,8 @@ register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
 
+_nostr_auth = _buzz_mod._load_nostr_auth()
+
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 SELF_NPUB = "npub1nl2u0wnd8mezfknc74q7pl9ec58h9nrrakce4tnk434qgaxl4psqe5twr6"
@@ -113,6 +115,35 @@ class TestBech32Helpers:
         assert npub_to_hex(SELF_NPUB) == SELF_PUBKEY
 
 
+class TestSignedEventBuilder:
+    def test_build_signed_event_uses_canonical_nostr_serialization(self):
+        private_key = "1".zfill(64)
+        event = _nostr_auth.build_signed_event(
+            private_key=private_key,
+            kind=20002,
+            tags=[["h", CHANNEL]],
+            content="",
+            created_at=1_700_000_000,
+            auxiliary_randomness=b"\x00" * 32,
+        )
+        canonical = json.dumps(
+            [
+                0,
+                event["pubkey"],
+                1_700_000_000,
+                20002,
+                [["h", CHANNEL]],
+                "",
+            ],
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        import hashlib
+
+        assert event["id"] == hashlib.sha256(canonical).hexdigest()
+        assert len(event["sig"]) == 128
+
+
 # ── Adapter init / config precedence ──────────────────────────────────────
 
 
@@ -141,6 +172,197 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+
+class TestTypingEvents:
+    def test_build_typing_event_is_signed_ephemeral_channel_event(self, monkeypatch):
+        adapter = _make_adapter()
+        expected = {"id": "typing-event", "kind": 20002}
+        build = MagicMock(return_value=expected)
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_load_nostr_auth",
+            lambda: MagicMock(build_signed_event=build),
+        )
+
+        event = adapter._build_typing_event(CHANNEL)
+
+        assert event == expected
+        build.assert_called_once_with(
+            private_key="nsec1test",
+            kind=20002,
+            tags=[["h", CHANNEL]],
+            content="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_typing_reuses_authenticated_socket_and_waits_for_ok(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.recv.side_effect = [
+            json.dumps(["OK", "typing-1", True, ""]),
+            json.dumps(["OK", "typing-2", True, ""]),
+        ]
+        adapter._ensure_typing_websocket = AsyncMock(return_value=websocket)
+        adapter._build_typing_event = MagicMock(
+            side_effect=[{"id": "typing-1"}, {"id": "typing-2"}]
+        )
+
+        await adapter.send_typing(CHANNEL)
+        await adapter.send_typing(CHANNEL)
+
+        assert websocket.send.await_count == 2
+        assert adapter._ensure_typing_websocket.await_count == 2
+        adapter._build_typing_event.assert_called_with(CHANNEL, None)
+
+    @pytest.mark.asyncio
+    async def test_send_typing_rejection_is_best_effort_and_closes_socket(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.recv.return_value = json.dumps(
+            ["OK", "typing-rejected", False, "rate limited"]
+        )
+        adapter._typing_websocket = websocket
+        adapter._ensure_typing_websocket = AsyncMock(return_value=websocket)
+        adapter._build_typing_event = MagicMock(
+            return_value={"id": "typing-rejected"}
+        )
+
+        await adapter.send_typing(CHANNEL)
+
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
+
+    @pytest.mark.asyncio
+    async def test_typing_handshake_cancellation_closes_half_open_socket(self, monkeypatch):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.state = 1
+        connect = AsyncMock(return_value=websocket)
+        monkeypatch.setitem(__import__("sys").modules, "websockets", MagicMock(connect=connect))
+        adapter._authenticate_websocket = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._ensure_typing_websocket()
+
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
+
+    @pytest.mark.asyncio
+    async def test_closed_websockets15_connection_reconnects_before_send(self, monkeypatch):
+        adapter = _make_adapter()
+        stale = AsyncMock()
+        stale.state = 3  # websockets.protocol.State.CLOSED
+        adapter._typing_websocket = stale
+        fresh = AsyncMock()
+        fresh.state = 1  # OPEN
+        connect = AsyncMock(return_value=fresh)
+        monkeypatch.setitem(__import__("sys").modules, "websockets", MagicMock(connect=connect))
+        adapter._authenticate_websocket = AsyncMock()
+
+        result = await adapter._ensure_typing_websocket()
+
+        assert result is fresh
+        stale.close.assert_awaited_once()
+        adapter._authenticate_websocket.assert_awaited_once_with(fresh)
+
+    def test_build_typing_event_preserves_thread_scope_tags(self, monkeypatch):
+        adapter = _make_adapter()
+        build = MagicMock(return_value={"id": "thread-typing"})
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_load_nostr_auth",
+            lambda: MagicMock(build_signed_event=build),
+        )
+
+        adapter._build_typing_event(
+            CHANNEL,
+            {"root_event_id": "root-id", "parent_event_id": "parent-id"},
+        )
+
+        assert build.call_args.kwargs["tags"] == [
+            ["h", CHANNEL],
+            ["e", "root-id", "", "root"],
+            ["e", "parent-id", "", "reply"],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_typing_ignores_unrelated_ack_before_matching_ack(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.recv.side_effect = [
+            json.dumps(["OK", "other-event", True, ""]),
+            json.dumps(["OK", "typing-event", True, ""]),
+        ]
+        adapter._ensure_typing_websocket = AsyncMock(return_value=websocket)
+        adapter._build_typing_event = MagicMock(return_value={"id": "typing-event"})
+
+        await adapter.send_typing(CHANNEL)
+
+        assert websocket.recv.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_malformed_typing_ack_is_best_effort_and_closes_socket(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.recv.return_value = "not-json"
+        adapter._typing_websocket = websocket
+        adapter._ensure_typing_websocket = AsyncMock(return_value=websocket)
+        adapter._build_typing_event = MagicMock(return_value={"id": "typing-event"})
+
+        await adapter.send_typing(CHANNEL)
+
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_typing_socket(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        adapter._typing_websocket = websocket
+
+        await adapter.disconnect()
+
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_during_authentication_cannot_resurrect_socket(self, monkeypatch):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.state = 1
+        connect = AsyncMock(return_value=websocket)
+        monkeypatch.setitem(__import__("sys").modules, "websockets", MagicMock(connect=connect))
+        auth_started = asyncio.Event()
+        release_auth = asyncio.Event()
+
+        async def authenticate(_websocket):
+            auth_started.set()
+            await release_auth.wait()
+
+        adapter._authenticate_websocket = authenticate
+        task = asyncio.create_task(adapter._ensure_typing_websocket())
+        await auth_started.wait()
+
+        await adapter.disconnect()
+        release_auth.set()
+
+        with pytest.raises(ConnectionError, match="superseded by disconnect"):
+            await task
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_open_websocket_is_reused(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        del websocket.state
+        websocket.closed = False
+        adapter._typing_websocket = websocket
+
+        result = await adapter._ensure_typing_websocket()
+
+        assert result is websocket
 
 
 # ── CLI error contract ────────────────────────────────────────────────────
