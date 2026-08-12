@@ -106,6 +106,7 @@ _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
+_TYPING_KIND = 20002
 
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
@@ -424,6 +425,9 @@ class BuzzAdapter(BasePlatformAdapter):
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
+        self._typing_websocket = None
+        self._typing_lock = asyncio.Lock()
+        self._typing_generation = 0
         self._ws_ready: Optional[asyncio.Event] = None
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
@@ -594,6 +598,7 @@ class BuzzAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        await self._close_typing_websocket()
         self._channel_state = {}
         self._poll_count = 0
 
@@ -635,8 +640,107 @@ class BuzzAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Buzz has no typing indicator API — no-op."""
-        pass
+        """Publish Buzz's ephemeral channel typing event (kind 20002).
+
+        A dedicated authenticated socket keeps the gateway's two-second typing
+        refresh off the inbound subscription and avoids a new NIP-42 handshake
+        per tick. Failures are best-effort: close the socket so the next tick
+        reconnects, but never fail the agent turn.
+        """
+        if not chat_id or not self._private_key:
+            return
+        async with self._typing_lock:
+            try:
+                websocket = await self._ensure_typing_websocket()
+                event = self._build_typing_event(str(chat_id), metadata)
+                await websocket.send(json.dumps(["EVENT", event], separators=(",", ":")))
+                while True:
+                    response = json.loads(
+                        await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
+                    )
+                    if (
+                        isinstance(response, list)
+                        and len(response) >= 3
+                        and response[0] == "OK"
+                        and response[1] == event["id"]
+                    ):
+                        if response[2] is not True:
+                            raise ConnectionError(
+                                str(response[3] if len(response) > 3 else "typing rejected")
+                            )
+                        return
+                    if isinstance(response, list) and response and response[0] in ("NOTICE", "CLOSED"):
+                        raise ConnectionError(str(response[-1]))
+            except Exception as error:
+                logger.debug("Buzz: typing publish failed: %s", error)
+                await self._close_typing_websocket()
+
+    def _build_typing_event(self, chat_id: str, metadata=None) -> dict:
+        tags = [["h", chat_id]]
+        metadata = metadata or {}
+        root = metadata.get("thread_id") or metadata.get("root_event_id")
+        parent = metadata.get("parent_event_id")
+        if root:
+            tags.append(["e", str(root), "", "root"])
+        if parent:
+            tags.append(["e", str(parent), "", "reply"])
+        return _load_nostr_auth().build_signed_event(
+            private_key=self._private_key,
+            kind=_TYPING_KIND,
+            tags=tags,
+            content="",
+        )
+
+    async def _ensure_typing_websocket(self):
+        generation = self._typing_generation
+        websocket = self._typing_websocket
+        if websocket is not None:
+            # websockets 15 exposes ``state`` rather than ``closed``. State 1
+            # is OPEN; older versions keep the boolean ``closed`` property.
+            state = getattr(websocket, "state", None)
+            closed = getattr(websocket, "closed", None)
+            if state == 1 or (state is None and closed is False):
+                return websocket
+            await self._close_typing_websocket()
+            # Closing a stale socket is an internal reconnect, not a lifecycle
+            # teardown. Snapshot the post-close generation for the new socket.
+            generation = self._typing_generation
+        import websockets
+
+        websocket = None
+        try:
+            websocket = await websockets.connect(
+                self._websocket_url(),
+                open_timeout=_WS_AUTH_TIMEOUT,
+                close_timeout=5,
+                ping_interval=20,
+                ping_timeout=20,
+                max_size=_WS_MAX_MESSAGE_BYTES,
+            )
+            await self._authenticate_websocket(websocket)
+        except BaseException:
+            # BasePlatformAdapter bounds send_typing() and cancels this
+            # coroutine on timeout. CancelledError is a BaseException on
+            # modern Python, so close the half-authenticated socket explicitly.
+            if websocket is not None:
+                await asyncio.shield(websocket.close())
+            raise
+        if generation != self._typing_generation:
+            # disconnect() advanced the lifecycle while authentication was in
+            # flight. Never resurrect a socket after teardown.
+            await websocket.close()
+            raise ConnectionError("Buzz typing socket superseded by disconnect")
+        self._typing_websocket = websocket
+        return websocket
+
+    async def _close_typing_websocket(self) -> None:
+        self._typing_generation += 1
+        websocket, self._typing_websocket = self._typing_websocket, None
+        if websocket is not None:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Add a reaction to a message via buzz-cli.
