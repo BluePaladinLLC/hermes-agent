@@ -380,6 +380,53 @@ class TestDmClassification:
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
+    @pytest.mark.asyncio
+    async def test_membership_event_subscribes_new_shared_channel(self):
+        """Joining a shared room is enough to make it live at runtime."""
+        a = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "exercise", "description": "Shared room"},
+        ])
+        cli.script("dms", "list", [])
+        a._run_cli = cli
+        websocket = AsyncMock()
+        subscriptions = {"hermes-buzz-memberships": None}
+
+        await a._handle_membership_event(
+            websocket,
+            subscriptions,
+            {"created_at": 1000, "kind": 44100, "tags": [["p", SELF_PUBKEY]]},
+        )
+
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
+        assert CHANNEL in subscriptions.values()
+        request = json.loads(websocket.send.await_args.args[0])
+        assert request[0] == "REQ"
+        assert request[2]["#h"] == [CHANNEL]
+
+    @pytest.mark.asyncio
+    async def test_fixed_watchlist_does_not_expand_on_membership_event(self):
+        """An explicit channels list remains an operator-controlled allowlist."""
+        a = _make_adapter({"channels": [DM_CHANNEL]})
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "exercise", "description": "Shared room"},
+        ])
+        cli.script("dms", "list", [])
+        a._run_cli = cli
+        websocket = AsyncMock()
+        subscriptions = {"hermes-buzz-memberships": None}
+
+        await a._handle_membership_event(
+            websocket,
+            subscriptions,
+            {"created_at": 1000, "kind": 44100, "tags": [["p", SELF_PUBKEY]]},
+        )
+
+        assert CHANNEL not in a._channel_state
+        websocket.send.assert_not_awaited()
+
 
 # ── Sending ───────────────────────────────────────────────────────────────
 
