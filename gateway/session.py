@@ -176,6 +176,11 @@ class SessionSource:
     guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    # Platform-specific routing metadata that must not alter session identity.
+    # Buzz uses these fields for NIP-10 thread-scoped typing while retaining the
+    # existing per-user channel session policy.
+    root_event_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).

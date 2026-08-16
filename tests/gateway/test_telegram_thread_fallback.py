@@ -284,13 +284,12 @@ def test_base_gateway_metadata_marks_buzz_thread_root_and_parent():
     source = SimpleNamespace(
         platform=Platform("buzz"),
         chat_type="group",
-        thread_id="root-event",
+        root_event_id="root-event",
     )
 
     metadata = _thread_metadata_for_source(source, "parent-event")
 
     assert metadata == {
-        "thread_id": "root-event",
         "root_event_id": "root-event",
         "parent_event_id": "parent-event",
     }

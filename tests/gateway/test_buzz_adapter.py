@@ -305,7 +305,9 @@ class TestInboundThreadScope:
         await adapter._handle_event(CHANNEL, state, event)
 
         dispatched = adapter._message_handler.await_args.args[0]
-        assert dispatched.source.thread_id == "root-id"
+        assert dispatched.source.thread_id is None
+        assert dispatched.source.root_event_id == "root-id"
+        assert dispatched.source.parent_event_id == "parent-id"
         assert dispatched.metadata["root_event_id"] == "root-id"
         assert dispatched.metadata["parent_event_id"] == "parent-id"
 
@@ -321,7 +323,9 @@ class TestInboundThreadScope:
         await adapter._handle_event(CHANNEL, state, event)
 
         dispatched = adapter._message_handler.await_args.args[0]
-        assert dispatched.source.thread_id == "legacy-root"
+        assert dispatched.source.thread_id is None
+        assert dispatched.source.root_event_id == "legacy-root"
+        assert dispatched.source.parent_event_id is None
 
 
 class TestTypingAcknowledgements:
@@ -339,6 +343,21 @@ class TestTypingAcknowledgements:
         await adapter.send_typing(CHANNEL)
 
         assert websocket.recv.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancellation_while_waiting_for_ack_closes_socket(self):
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.recv.side_effect = asyncio.CancelledError
+        adapter._typing_websocket = websocket
+        adapter._ensure_typing_websocket = AsyncMock(return_value=websocket)
+        adapter._build_typing_event = MagicMock(return_value={"id": "typing-event"})
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.send_typing(CHANNEL)
+
+        websocket.close.assert_awaited_once()
+        assert adapter._typing_websocket is None
 
     @pytest.mark.asyncio
     async def test_malformed_typing_ack_is_best_effort_and_closes_socket(self):
