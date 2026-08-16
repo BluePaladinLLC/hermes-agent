@@ -104,6 +104,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     """
     thread_id = getattr(source, "thread_id", None)
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    if _platform_name(getattr(source, "platform", None)) == "buzz" and thread_id is not None:
+        # Buzz uses NIP-10 root/reply e tags for thread-scoped typing. The
+        # source thread id is the durable root while the triggering message is
+        # the direct parent for this turn's ephemeral typing event.
+        metadata["root_event_id"] = str(thread_id)
+        if reply_to_message_id is not None:
+            metadata["parent_event_id"] = str(reply_to_message_id)
     # Slack workspace identity is durable routing state, not ephemeral event
     # metadata. Carry it on every outbound path (including unthreaded sends)
     # so a multi-workspace Socket Mode gateway never falls back to its primary

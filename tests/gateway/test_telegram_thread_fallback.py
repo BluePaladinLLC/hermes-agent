@@ -280,6 +280,22 @@ async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
     assert call_log == []
 
 
+def test_base_gateway_metadata_marks_buzz_thread_root_and_parent():
+    source = SimpleNamespace(
+        platform=Platform("buzz"),
+        chat_type="group",
+        thread_id="root-event",
+    )
+
+    metadata = _thread_metadata_for_source(source, "parent-event")
+
+    assert metadata == {
+        "thread_id": "root-event",
+        "root_event_id": "root-event",
+        "parent_event_id": "parent-event",
+    }
+
+
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,

@@ -1122,6 +1122,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
+        tags = event.get("tags") if isinstance(event.get("tags"), list) else []
         if not pubkey or not isinstance(content, str) or not content.strip():
             return
 
@@ -1160,6 +1161,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            tags=tags,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1323,10 +1325,33 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        tags: list | None = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
             return
+
+        root_event_id = None
+        parent_event_id = None
+        unmarked_event_ids = []
+        for tag in tags or []:
+            if not isinstance(tag, list) or len(tag) < 2 or tag[0] != "e":
+                continue
+            referenced_id = str(tag[1])
+            marker = str(tag[3]) if len(tag) > 3 else ""
+            if marker == "root" and root_event_id is None:
+                root_event_id = referenced_id
+            elif marker == "reply" and parent_event_id is None:
+                parent_event_id = referenced_id
+            elif not marker:
+                unmarked_event_ids.append(referenced_id)
+
+        # NIP-10 clients may omit markers. In that legacy form the first e tag
+        # is the root and the last is the direct parent.
+        if root_event_id is None and unmarked_event_ids:
+            root_event_id = unmarked_event_ids[0]
+        if parent_event_id is None and len(unmarked_event_ids) > 1:
+            parent_event_id = unmarked_event_ids[-1]
 
         source = self.build_source(
             chat_id=chat_id,
@@ -1334,6 +1359,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=root_event_id,
         )
 
         event = MessageEvent(
@@ -1342,6 +1368,14 @@ class BuzzAdapter(BasePlatformAdapter):
             source=source,
             message_id=message_id,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
+            metadata={
+                key: value
+                for key, value in (
+                    ("root_event_id", root_event_id),
+                    ("parent_event_id", parent_event_id),
+                )
+                if value is not None
+            },
         )
 
         await self.handle_message(event)
