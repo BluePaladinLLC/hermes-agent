@@ -1,10 +1,11 @@
 """Tests for the Buzz platform adapter plugin."""
 
 import asyncio
+from collections import OrderedDict
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -286,6 +287,44 @@ class TestTypingEvents:
             ["e", "parent-id", "", "reply"],
         ]
 
+
+class TestInboundThreadScope:
+    @pytest.mark.asyncio
+    async def test_root_and_reply_tags_propagate_to_dispatched_source(self):
+        adapter = _make_adapter()
+        adapter.require_mention = False
+        adapter._message_handler = AsyncMock(return_value="ok")
+        adapter._channel_names[CHANNEL] = "Threaded channel"
+        state = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+        event = _event("reply-id", content="thread reply", created_at=42)
+        event["tags"] += [
+            ["e", "root-id", "", "root"],
+            ["e", "parent-id", "", "reply"],
+        ]
+
+        await adapter._handle_event(CHANNEL, state, event)
+
+        dispatched = adapter._message_handler.await_args.args[0]
+        assert dispatched.source.thread_id == "root-id"
+        assert dispatched.metadata["root_event_id"] == "root-id"
+        assert dispatched.metadata["parent_event_id"] == "parent-id"
+
+    @pytest.mark.asyncio
+    async def test_unmarked_reply_tag_becomes_thread_root(self):
+        adapter = _make_adapter()
+        adapter.require_mention = False
+        adapter._message_handler = AsyncMock(return_value="ok")
+        state = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+        event = _event("reply-id", content="legacy thread reply", created_at=42)
+        event["tags"].append(["e", "legacy-root"])
+
+        await adapter._handle_event(CHANNEL, state, event)
+
+        dispatched = adapter._message_handler.await_args.args[0]
+        assert dispatched.source.thread_id == "legacy-root"
+
+
+class TestTypingAcknowledgements:
     @pytest.mark.asyncio
     async def test_send_typing_ignores_unrelated_ack_before_matching_ack(self):
         adapter = _make_adapter()
