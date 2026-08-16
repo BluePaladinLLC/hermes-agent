@@ -51,6 +51,16 @@
    - A single safe Sigma canary visibly passes one real channel turn and one real DM turn before fleet rollout.
    - Changes are committed and pushed to durable repository branches with upstream-ready PR descriptions and rollback notes.
 
+## Fleet follow-up register
+
+Keep these items visible but separate from the acceptance path for typing plus truthful activity:
+
+1. **Synapse mention-dispatch policy and configuration** — verify live `BUZZ_REQUIRE_MENTION`, `platforms.buzz.require_mention`, identity/profile name, and actual inbound `p` tags before changing code. The current adapter accepts a boundary-safe textual `@name` when mention gating is enabled; Synapse's undeployed divergent suite instead requires an explicit self `p` tag. Determine whether Synapse is chatty because mention gating is disabled/divergent or because textual matching is the wrong policy. Do not infer causality from the test patch alone.
+2. **Fleet configuration convergence** — inventory the five agents' Buzz transport, room discovery, mention policy, allow-list, and presence settings with secrets redacted; define one canonical profile plus intentional exceptions.
+3. **Combined adapter parity** — merge and test dynamic joined-room discovery, presence lifecycle, native typing, and cancellation cleanup before retiring host-local copies.
+4. **Presence protocol scope** — decide whether presence belongs in the same upstream proposal or a stacked follow-up; typing and activity acceptance do not require permanent online state.
+5. **Production test dependencies** — production hosts need not install pytest, but every fleet patch must be exercised in an isolated locked checkout before deployment.
+
 ## Non-goals
 
 - Replacing final assistant replies with activity events.
