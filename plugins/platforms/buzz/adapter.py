@@ -1010,6 +1010,7 @@ class BuzzAdapter(BasePlatformAdapter):
         subscribe to any new ones (fresh DMs dispatch from their beginning)."""
         self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
         before = set(self._channel_state)
+        await self._discover_joined_channels(seed=False)
         await self._discover_dms(seed=False)
         for channel_id in self._channel_state:
             if channel_id in before:
@@ -1091,6 +1092,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 self._poll_count += 1
                 try:
                     if self._poll_count % _DM_DISCOVERY_EVERY == 0:
+                        await self._discover_joined_channels(seed=False)
                         await self._discover_dms(seed=False)
                     for channel_id in list(self._channel_state):
                         await self._poll_channel(channel_id)
@@ -1127,6 +1129,35 @@ class BuzzAdapter(BasePlatformAdapter):
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
+
+    async def _discover_joined_channels(self, *, seed: bool) -> None:
+        """Watch newly joined shared channels when no fixed watchlist is configured.
+
+        Buzz membership is the subscription boundary: adding this identity to a
+        room must be enough to make that room live. Operators who explicitly set
+        ``channels`` keep their fixed allowlist semantics.
+        """
+        if self.channels:
+            return
+        code, out, _err = await self._run_cli(["channels", "list"])
+        if code != 0:
+            return
+        for channel in _parse_json_list(out):
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id:
+                continue
+            self._channel_meta[channel_id] = channel
+            self._channel_names.setdefault(
+                channel_id, str(channel.get("name") or channel_id)
+            )
+            if channel_id in self._channel_state or self._may_reclassify_as_dm(
+                channel_id
+            ):
+                continue
+            # Shared rooms may already contain a long history. Always seed the
+            # high-water mark before making a newly discovered room live so the
+            # polling fallback cannot replay old mentions after an invitation.
+            await self._seed_channel(channel_id, chat_type="group")
 
     async def _discover_dms(self, *, seed: bool) -> None:
         """Watch DM conversations.  New ones found mid-run dispatch from their
