@@ -671,6 +671,12 @@ class BuzzAdapter(BasePlatformAdapter):
                         return
                     if isinstance(response, list) and response and response[0] in ("NOTICE", "CLOSED"):
                         raise ConnectionError(str(response[-1]))
+            except asyncio.CancelledError:
+                # The gateway bounds each typing tick. Cancellation can land
+                # during EVENT send or ACK wait, leaving an apparently OPEN but
+                # unusable socket. Invalidate it before propagating cancellation.
+                await asyncio.shield(self._close_typing_websocket())
+                raise
             except Exception as error:
                 logger.debug("Buzz: typing publish failed: %s", error)
                 await self._close_typing_websocket()
@@ -1359,7 +1365,8 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
-            thread_id=root_event_id,
+            root_event_id=root_event_id,
+            parent_event_id=parent_event_id,
         )
 
         event = MessageEvent(
