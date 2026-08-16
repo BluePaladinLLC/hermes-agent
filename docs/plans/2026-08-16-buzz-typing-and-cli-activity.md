@@ -13,8 +13,13 @@
 
 ## Current-state findings
 
-- Hermes already has a generic keep-typing loop, but the current Buzz adapter's `send_typing()` is a no-op.
+- Hermes already has a generic keep-typing loop. Upstream v0.20.2 and the Sigma/Pons installed baseline leave the Buzz adapter's `send_typing()` as a no-op, but this is not true fleet-wide: Cortex, Vagus, and Synapse carried the same uncommitted native-typing/presence patch.
 - The focused Hermes implementation is on `feat/buzz-native-typing-current`; its initial adapter/busy-session suite passes `46/46`, and Ruff/diff checks pass.
+- The fleet patch is now durable in the private `BluePaladinLLC/hermes-fleet-customizations` repository (`fb98674` through `1ccc8ec`). The three host copies were reported byte-identical; the captured `patches/buzz-presence-typing/cortex.patch` has SHA-256 `1c65e62e20c1f7cd4d1ed81c209b6aa0b005ab3f752b450f41e4f0515e71957a`.
+- Reconciliation on 2026-08-16 found **one typing implementation, not two competing designs**: the fleet patch and `feat/buzz-native-typing-current` use the same kind `20002` publisher, authenticated socket reuse, ACK correlation, stale reconnect, cancellation-safe half-authenticated socket cleanup, and disconnect generation guard. The focused branch additionally extracts generic event signing into `nostr_auth.build_signed_event()` and has substantially deeper typing transport tests. Retain the focused branch as the upstream typing lane; retire the fleet typing copy after the combined canary succeeds.
+- The fleet patch covers ground intentionally absent from the focused typing PR: runtime presence heartbeat/offline publication, subprocess cancellation cleanup in `_exec_buzz`, and stricter textual mention boundaries. Its canonical 26-test suite passed `26/26` against the fleet-applied adapter. The same suite passed `23/26` against the focused branch; the three failures are the known bare-name/longer-handle mention-boundary behaviors, not typing failures.
+- Fleet feature coverage is split: Sigma/Pons have dynamic joined-room discovery but no presence/typing patch; Cortex/Vagus/Synapse have presence/typing but no dynamic joined-room discovery. No deployed adapter has both. Dynamic discovery is captured under `patches/buzz-dynamic-room/` and remains associated with upstream issue `#75107` / PR `#80038`.
+- Synapse's divergent p-tag suite is an unimplemented strict dispatch specification, not current behavior: textual `@name` without the agent's Nostr `p` tag must not dispatch, another identity's `p` tag must not dispatch, and an exact self `p` tag dispatches once. This directly intersects dispatch and the reported compulsive-reply bug, so it is tracked separately and must be proven RED before implementation.
 - The current draft contains unrelated busy-ack and onboarding changes. The upstream typing PR must be reduced to the adapter, signing helper, and focused tests unless a separate change is justified.
 - Real thread scoping is not yet proven: inbound Buzz `e` tags must be propagated into `SessionSource.thread_id` before thread-specific typing tags can be claimed end to end.
 - Buzz Desktop already ingests owner-encrypted kind `24200` events for viewer-owned relay agents and decorates DM and channel sidebar rows with active work. Relevant code includes:
@@ -50,7 +55,7 @@
 
 - Replacing final assistant replies with activity events.
 - Giving Buzz Desktop lifecycle ownership of Hermes runtimes.
-- Broad presence, directory, identity migration, or unrelated busy-ack refactors in the typing PR.
+- Broad presence, directory, identity migration, dynamic-room discovery, mention-policy changes, or unrelated busy-ack refactors in the narrow typing PR. These may form a coherent follow-up integration proposal, but they must not obscure review of the typing transport.
 - Installing an unsigned Desktop build or weakening Gatekeeper.
 
 ## Work plan
@@ -67,9 +72,10 @@
 
 1. Rebase the focused branch on current `origin/main` and remove unrelated files from the typing diff.
 2. Keep canonical kind `20002` signing, authenticated socket reuse, serialized ACK handling, cancellation-safe cleanup, stale reconnect, and disconnect cleanup.
-3. Add inbound root/reply `e`-tag parsing and propagate the thread root to `SessionSource.thread_id`.
-4. Add focused tests for channels, DMs, thread propagation/tags, malformed/rejected/unrelated ACKs, cancellation, socket reuse, stale reconnect, and disconnect races.
-5. Run:
+3. Preserve the generic `nostr_auth.build_signed_event()` extraction and deeper transport/race tests from the focused branch; do not create a third typing variant.
+4. Add inbound root/reply `e`-tag parsing and propagate the thread root to `SessionSource.thread_id`.
+5. Add focused tests for channels, DMs, thread propagation/tags, malformed/rejected/unrelated ACKs, cancellation, socket reuse, stale reconnect, and disconnect races.
+6. Run:
 
 ```bash
 .venv/bin/python -m pytest -q tests/gateway/test_buzz_adapter.py
@@ -78,6 +84,21 @@
 .venv/bin/ruff check plugins/platforms/buzz/adapter.py plugins/platforms/buzz/nostr_auth.py tests/gateway/test_buzz_adapter.py
 git diff --check
 ```
+
+### 1a. Reconcile the complete fleet adapter without widening the typing PR
+
+1. Build and test one combined adapter containing dynamic joined-room discovery, native typing, presence lifecycle, `_exec_buzz` cancellation cleanup, and the accepted mention policy.
+2. Keep the narrow typing PR reviewable; land combined behavior through separate commits/PRs or a clearly stacked integration branch.
+3. Run the captured canonical fleet suite and the upstream Buzz adapter suites against the combined tree.
+4. Canary the combined tree on Sigma before retiring host-local fleet patches.
+
+### 1b. Prove or reject the strict p-tag dispatch model
+
+1. Import Synapse's divergent p-tag tests as regression tests and first prove they fail against the current adapter for the intended reason.
+2. Trace DM, channel, thread, and relay-subscription behavior so a dispatch gate does not break legitimate direct messages or explicit agent addressing.
+3. Implement the smallest dispatch-only fix: self `p` tag required for shared-room dispatch; textual names alone do not authorize a turn; dispatch exactly once.
+4. Keep this change separate from typing transport because both touch `adapter.py` but solve different user-visible contracts.
+5. Verify the reported compulsive-reply symptom in Buzz. Treat Discord as a separate adapter/policy investigation rather than assuming the Buzz fix applies there.
 
 ### 2. Prove Hermes observer activity emission
 
