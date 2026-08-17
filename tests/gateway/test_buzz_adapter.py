@@ -48,6 +48,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_OWNER_PUBKEY",
 )
 
 
@@ -173,6 +174,45 @@ class TestBuzzAdapterInit:
         from gateway.config import PlatformConfig
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
+
+
+class TestObserverActivity:
+    @pytest.mark.asyncio
+    async def test_publish_activity_encrypts_signs_tags_and_acks(self, monkeypatch):
+        agent_key = "1".zfill(64)
+        owner_key = "2".zfill(64)
+        owner_pubkey = _nostr_auth.public_key_hex(owner_key)
+        adapter = _make_adapter({"owner_pubkey": owner_pubkey})
+        adapter._private_key = agent_key
+        adapter._self_pubkey = _nostr_auth.public_key_hex(agent_key)
+        websocket = AsyncMock()
+
+        async def recv_ack():
+            sent = json.loads(websocket.send.await_args.args[0])
+            return json.dumps(["OK", sent[1]["id"], True, ""])
+
+        websocket.recv.side_effect = recv_ack
+        monkeypatch.setattr(
+            adapter, "_ensure_typing_websocket", AsyncMock(return_value=websocket)
+        )
+        assert await adapter.publish_activity(
+            {"kind": "turn_started", "sessionId": "s1"}
+        )
+        event = json.loads(websocket.send.await_args.args[0])[1]
+        assert event["kind"] == 24200
+        assert event["tags"] == [
+            ["p", owner_pubkey],
+            ["agent", adapter._self_pubkey],
+            ["frame", "telemetry"],
+        ]
+        assert event["pubkey"] == adapter._self_pubkey
+        assert len(event["id"]) == 64
+        assert len(event["sig"]) == 128
+
+    @pytest.mark.asyncio
+    async def test_publish_activity_is_disabled_without_owner(self):
+        adapter = _make_adapter()
+        assert await adapter.publish_activity({"kind": "turn_started"}) is False
 
 
 class TestTypingEvents:

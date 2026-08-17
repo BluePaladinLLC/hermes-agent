@@ -4047,6 +4047,13 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        tool_call_id = kwargs.get("tool_call_id")
+        if tool_call_id and event_type in {
+            "tool.error",
+            "tool.failure",
+            "tool.permission_denied",
+        }:
+            ctx.activity_tool_errors[tool_call_id] = True
         # Live status line (Slack's assistant status): stash the current
         # tool phrase on the adapter; the _keep_typing refresh renders it
         # within a couple of seconds. Handled before every other gate
@@ -5548,21 +5555,35 @@ class TurnRunner:
         # Compose ID-bearing lifecycle consumers: Discord's one-time voice
         # ack and Slack's native task cards both ride the authoritative
         # start callback, so neither has to infer identity from tool names.
-        _combined_start_cb = ctx.native_tool_start_callback or ctx.voice_ack_callback
-        agent.tool_start_callback = (
-            _combined_start_cb
-            if (
-                ctx._voice_ack_guild[0] is not None
-                or ctx._native_slack_task_cards
+        _start_callbacks = [
+            callback
+            for callback in (
+                ctx.native_tool_start_callback,
+                ctx.voice_ack_callback if ctx._voice_ack_guild[0] is not None else None,
+                ctx.activity_tool_start_callback,
             )
-            else None
-        )
-        agent.tool_complete_callback = (
-            ctx.native_tool_complete_callback
-            if ctx._native_slack_task_cards
-            and ctx.native_tool_complete_callback is not None
-            else None
-        )
+            if callback is not None
+        ]
+
+        def _combined_start_cb(call_id, tool_name, args):
+            for callback in _start_callbacks:
+                callback(call_id, tool_name, args)
+
+        agent.tool_start_callback = _combined_start_cb if _start_callbacks else None
+        _complete_callbacks = [
+            callback
+            for callback in (
+                ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None,
+                ctx.activity_tool_complete_callback,
+            )
+            if callback is not None
+        ]
+
+        def _combined_complete_cb(call_id, tool_name, args, result):
+            for callback in _complete_callbacks:
+                callback(call_id, tool_name, args, result)
+
+        agent.tool_complete_callback = _combined_complete_cb if _complete_callbacks else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -19635,6 +19656,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        _activity_adapter = self._adapter_for_source(source)
+        _publish_activity = getattr(_activity_adapter, "publish_activity", None)
+        _activity_turn_id = f"{session_entry.session_id}:{run_generation}"
+        _activity_started_at = datetime.now(timezone.utc).isoformat()
+        _activity_liveness_task = None
+        _activity_futures = []
+
+        async def _emit_activity(kind: str, payload: Optional[dict] = None) -> None:
+            if not callable(_publish_activity):
+                return
+            envelope = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "kind": kind,
+                "agentIndex": 0,
+                "channelId": source.chat_id,
+                "sessionId": session_entry.session_id,
+                "turnId": _activity_turn_id,
+                "startedAt": _activity_started_at,
+                "payload": payload or {},
+            }
+            try:
+                await asyncio.wait_for(_publish_activity(envelope), timeout=2.0)
+            except Exception as error:
+                logger.debug("Activity telemetry publish failed: %s", error)
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -19647,6 +19693,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
+            await _emit_activity("turn_started")
+
+            async def _activity_liveness() -> None:
+                while True:
+                    await asyncio.sleep(10)
+                    await _emit_activity("turn_liveness")
+
+            if callable(_publish_activity):
+                _activity_liveness_task = asyncio.create_task(_activity_liveness())
 
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
@@ -19669,6 +19724,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                activity_turn_id=_activity_turn_id,
+                activity_started_at=_activity_started_at,
+                activity_futures=_activity_futures,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -19901,7 +19959,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": agent_result.get("model", ""),
                 "provider": agent_result.get("provider", ""),
             })
-            
+            if _activity_liveness_task is not None:
+                _activity_liveness_task.cancel()
+                await asyncio.gather(_activity_liveness_task, return_exceptions=True)
+                _activity_liveness_task = None
+            if _activity_futures:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(f) for f in _activity_futures),
+                    return_exceptions=True,
+                )
+            await _emit_activity(
+                "turn_ending",
+                {"status": "completed", "model": agent_result.get("model", "")},
+            )
+
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -20294,6 +20365,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return response
             
         except Exception as e:
+            if _activity_liveness_task is not None:
+                _activity_liveness_task.cancel()
+                await asyncio.gather(_activity_liveness_task, return_exceptions=True)
+                _activity_liveness_task = None
+            await _emit_activity(
+                "turn_ending",
+                {"status": "failed", "errorType": type(e).__name__},
+            )
             # Stop typing indicator on error too, retaining Slack thread/workspace
             # routing so a failed turn cannot leave its status visible.
             try:
@@ -20409,6 +20488,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            if _activity_liveness_task is not None:
+                _activity_liveness_task.cancel()
+                await asyncio.gather(_activity_liveness_task, return_exceptions=True)
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -27272,6 +27354,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        activity_turn_id: Optional[str] = None,
+        activity_started_at: Optional[str] = None,
+        activity_futures: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -27292,6 +27377,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                activity_turn_id=activity_turn_id,
+                activity_started_at=activity_started_at,
+                activity_futures=activity_futures,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -27305,6 +27393,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                activity_turn_id=activity_turn_id,
+                activity_started_at=activity_started_at,
+                activity_futures=activity_futures,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -27448,6 +27539,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        activity_turn_id: Optional[str] = None,
+        activity_started_at: Optional[str] = None,
+        activity_futures: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -27757,8 +27851,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            activity_turn_id=activity_turn_id or f"{session_id}:{run_generation}",
+            activity_started_at=activity_started_at or datetime.now(timezone.utc).isoformat(),
+            activity_futures=activity_futures if activity_futures is not None else [],
         )
         turn_runner = TurnRunner(self, turn_ctx)
+        _turn_activity_adapter = self._adapter_for_source(source)
+        _turn_publish_activity = getattr(_turn_activity_adapter, "publish_activity", None)
+        if callable(_turn_publish_activity):
+            _turn_loop = asyncio.get_running_loop()
+            _tool_turn_id = turn_ctx.activity_turn_id
+            _tool_started_at = turn_ctx.activity_started_at
+
+            def _schedule_tool_activity(kind, call_id, tool_name, payload):
+                envelope = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "kind": kind,
+                    "agentIndex": 0,
+                    "channelId": source.chat_id,
+                    "sessionId": session_id,
+                    "turnId": _tool_turn_id,
+                    "startedAt": _tool_started_at,
+                    "payload": {"toolCallId": call_id, "toolName": tool_name, **payload},
+                }
+                future = safe_schedule_threadsafe(
+                    _turn_publish_activity(envelope), _turn_loop, logger=logger
+                )
+                if future is not None:
+                    turn_ctx.activity_futures.append(future)
+
+            turn_ctx.activity_tool_start_callback = (
+                lambda call_id, tool_name, args: (
+                    turn_ctx.activity_tool_errors.__setitem__(call_id, False),
+                    _schedule_tool_activity(
+                        "tool_call", call_id, tool_name, {"args": args}
+                    ),
+                )[-1]
+            )
+            turn_ctx.activity_tool_complete_callback = (
+                lambda call_id, tool_name, args, result: _schedule_tool_activity(
+                    "tool_call_update",
+                    call_id,
+                    tool_name,
+                    {
+                        "isError": turn_ctx.activity_tool_errors.pop(call_id, False),
+                    },
+                )
+            )
         # Callback invoked by agent on tool lifecycle events — extracted to
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback

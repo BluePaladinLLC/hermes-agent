@@ -57,3 +57,7 @@ optional_env:
     description: "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
     prompt: "Credentials file path (or empty)"
     password: false
+  - name: BUZZ_OWNER_PUBKEY
+    description: "Owner npub or hex pubkey for encrypted kind-24200 activity telemetry (opt-in)"
+    prompt: "Owner npub or hex pubkey (or empty to disable activity telemetry)"
+    password: false

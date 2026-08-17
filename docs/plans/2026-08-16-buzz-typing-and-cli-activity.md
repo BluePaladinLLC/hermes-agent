@@ -122,6 +122,8 @@ git diff --check
 4. Document the publish-only MVP and explicitly exclude unsupported reverse controls.
 5. Add unit/integration tests for encryption, owner targeting, lifecycle ordering, completion/error cleanup, and disabled/no-owner behavior.
 
+**Implementation note (2026-08-17):** The publish-only MVP is implemented behind `BUZZ_OWNER_PUBKEY`. Hermes signs owner-targeted kind `24200` events, encrypts compact observer envelopes with NIP-44 v2, emits start/tool/liveness/terminal frames, drains queued tool publications before the terminal frame, and ignores reverse controls. The local interoperability test decrypts with `nostr-tools` when `NOSTR_TOOLS_CWD` is supplied. Live relay/Desktop acceptance remains a Sigma canary gate; implementation and tests alone do not prove sidebar rendering.
+
 ### 3. Add Buzz end-to-end regression coverage
 
 **Files:**

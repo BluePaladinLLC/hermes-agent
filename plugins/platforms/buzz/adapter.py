@@ -107,6 +107,7 @@ _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 _TYPING_KIND = 20002
+_OBSERVER_KIND = 24200
 
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
@@ -129,6 +130,23 @@ def _load_nostr_auth():
 
         path = Path(__file__).with_name("nostr_auth.py")
         spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+def _load_nip44():
+    """Load the sibling NIP-44 helper in package and plugin-loader modes."""
+    try:
+        from . import nip44  # type: ignore[no-redef]
+
+        return nip44
+    except ImportError:
+        import importlib.util
+
+        path = Path(__file__).with_name("nip44.py")
+        spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nip44", path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -421,6 +439,9 @@ class BuzzAdapter(BasePlatformAdapter):
         self._self_pubkey: str = ""
         self._self_npub: str = ""
         self._display_name: str = ""
+        raw_owner = os.getenv("BUZZ_OWNER_PUBKEY") or extra.get("owner_pubkey", "")
+        self._owner_pubkey = _normalize_user_ref(str(raw_owner)) or ""
+        self._observer_seq: Dict[str, int] = {}
 
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
@@ -696,6 +717,58 @@ class BuzzAdapter(BasePlatformAdapter):
             tags=tags,
             content="",
         )
+
+    async def publish_activity(self, envelope: dict) -> bool:
+        """Publish one owner-encrypted kind-24200 telemetry frame."""
+        if not self._owner_pubkey or not self._private_key or not self._self_pubkey:
+            return False
+        frame = dict(envelope)
+        session_id = str(frame.get("sessionId") or "")
+        async with self._typing_lock:
+            next_seq = self._observer_seq.get(session_id, 0) + 1
+            self._observer_seq[session_id] = next_seq
+            frame.setdefault("seq", next_seq)
+            try:
+                plaintext = json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
+                content = _load_nip44().encrypt_v2(
+                    plaintext, self._private_key, self._owner_pubkey
+                )
+                event = _load_nostr_auth().build_signed_event(
+                    private_key=self._private_key,
+                    kind=_OBSERVER_KIND,
+                    tags=[
+                        ["p", self._owner_pubkey],
+                        ["agent", self._self_pubkey],
+                        ["frame", "telemetry"],
+                    ],
+                    content=content,
+                )
+                websocket = await self._ensure_typing_websocket()
+                await websocket.send(json.dumps(["EVENT", event], separators=(",", ":")))
+                while True:
+                    response = json.loads(
+                        await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
+                    )
+                    if (
+                        isinstance(response, list)
+                        and len(response) >= 3
+                        and response[0] == "OK"
+                        and response[1] == event["id"]
+                    ):
+                        if response[2] is not True:
+                            raise ConnectionError(
+                                str(response[3] if len(response) > 3 else "activity rejected")
+                            )
+                        return True
+                    if isinstance(response, list) and response and response[0] in ("NOTICE", "CLOSED"):
+                        raise ConnectionError(str(response[-1]))
+            except asyncio.CancelledError:
+                await asyncio.shield(self._close_typing_websocket())
+                raise
+            except Exception as error:
+                logger.debug("Buzz: activity publish failed: %s", error)
+                await self._close_typing_websocket()
+                return False
 
     async def _ensure_typing_websocket(self):
         generation = self._typing_generation
