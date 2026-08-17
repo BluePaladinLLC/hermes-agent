@@ -64,6 +64,14 @@ class TestTurnRunner:
         )
         assert ctx.activity_tool_errors == {"call-a": True}
 
+    def test_tool_result_failure_detector_catches_failed_terminal(self):
+        from agent.display import _detect_tool_failure
+
+        failed, _ = _detect_tool_failure(
+            "terminal", '{"output": "boom", "exit_code": 1, "error": null}'
+        )
+        assert failed is True
+
     def test_methods_exist_and_bind(self):
         from gateway.run import TurnRunner
 
