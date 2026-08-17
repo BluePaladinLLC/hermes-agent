@@ -19968,6 +19968,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     *(asyncio.wrap_future(f) for f in _activity_futures),
                     return_exceptions=True,
                 )
+                _activity_futures.clear()
             await _emit_activity(
                 "turn_ending",
                 {"status": "completed", "model": agent_result.get("model", "")},
@@ -20369,6 +20370,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _activity_liveness_task.cancel()
                 await asyncio.gather(_activity_liveness_task, return_exceptions=True)
                 _activity_liveness_task = None
+            if _activity_futures:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(f) for f in _activity_futures),
+                    return_exceptions=True,
+                )
+                _activity_futures.clear()
             await _emit_activity(
                 "turn_ending",
                 {"status": "failed", "errorType": type(e).__name__},
@@ -27880,6 +27887,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if future is not None:
                     turn_ctx.activity_futures.append(future)
 
+            def _activity_result_is_error(tool_name, result):
+                from agent.display import _detect_tool_failure
+
+                if not isinstance(result, str):
+                    try:
+                        result = json.dumps(result, default=str)
+                    except Exception:
+                        result = str(result)
+                return _detect_tool_failure(tool_name, result)[0]
+
             turn_ctx.activity_tool_start_callback = (
                 lambda call_id, tool_name, args: (
                     turn_ctx.activity_tool_errors.__setitem__(call_id, False),
@@ -27894,7 +27911,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     call_id,
                     tool_name,
                     {
-                        "isError": turn_ctx.activity_tool_errors.pop(call_id, False),
+                        "isError": (
+                            turn_ctx.activity_tool_errors.pop(call_id, False)
+                            or _activity_result_is_error(tool_name, result)
+                        ),
                     },
                 )
             )
