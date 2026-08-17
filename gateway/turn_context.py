@@ -26,7 +26,7 @@ Field notes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass
@@ -143,3 +143,9 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    activity_tool_start_callback: Optional[Callable] = None
+    activity_tool_complete_callback: Optional[Callable] = None
+    activity_turn_id: Optional[str] = None
+    activity_started_at: Optional[str] = None
+    activity_futures: List[Any] = field(default_factory=list)
+    activity_tool_errors: Dict[str, bool] = field(default_factory=dict)

@@ -38,7 +38,11 @@ class TestTurnContext:
         a._cleanup_msg_ids.append("1")
         assert b.last_progress_msg == [None]
         assert b.repeat_count == [0]
+        a.activity_futures.append("future")
+        a.activity_tool_errors["call-a"] = True
         assert b._cleanup_msg_ids == []
+        assert b.activity_futures == []
+        assert b.activity_tool_errors == {}
 
     def test_shared_containers_visible_to_outer_scope(self):
         # The outer body and the runner share the SAME list objects, so
@@ -50,6 +54,16 @@ class TestTurnContext:
 
 
 class TestTurnRunner:
+    def test_tool_failure_progress_marks_activity_call(self):
+        ctx = TurnContext()
+        runner = _make_runner(ctx)
+        runner.progress_callback(
+            "tool.failure",
+            "terminal",
+            tool_call_id="call-a",
+        )
+        assert ctx.activity_tool_errors == {"call-a": True}
+
     def test_methods_exist_and_bind(self):
         from gateway.run import TurnRunner
 
