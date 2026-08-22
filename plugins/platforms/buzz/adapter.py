@@ -462,6 +462,12 @@ class BuzzAdapter(BasePlatformAdapter):
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
 
+    # Gateway turns publish activity over this same serialized NIP-42 socket.
+    # Allow lock wait plus authenticated socket startup to exceed the generic
+    # 1.5s HTTP-oriented typing budget; cancellation otherwise restarts the
+    # handshake on every refresh and no kind-20002 event reaches the relay.
+    _typing_send_timeout = 5.0
+
     @property
     def name(self) -> str:
         return "Buzz"

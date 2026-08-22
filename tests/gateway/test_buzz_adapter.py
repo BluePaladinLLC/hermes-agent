@@ -257,6 +257,40 @@ class TestTypingEvents:
         adapter._build_typing_event.assert_called_with(CHANNEL, None)
 
     @pytest.mark.asyncio
+    async def test_keep_typing_allows_buzz_serialized_egress_delay(self, monkeypatch):
+        """A typing tick may wait >1.5s behind activity on the shared socket."""
+        adapter = _make_adapter()
+        websocket = AsyncMock()
+        websocket.state = 1  # websockets.State.OPEN
+        adapter._typing_websocket = websocket
+        adapter._build_typing_event = MagicMock(return_value={"id": "typing-delayed"})
+        stop_event = asyncio.Event()
+
+        async def recv_ack():
+            stop_event.set()
+            return json.dumps(["OK", "typing-delayed", True, ""])
+
+        websocket.recv.side_effect = recv_ack
+        monkeypatch.setattr(adapter, "stop_typing", AsyncMock())
+
+        # Activity telemetry owns the serialized egress lock long enough to
+        # exceed the generic 1.5s budget, then releases the existing socket.
+        await adapter._typing_lock.acquire()
+        task = asyncio.create_task(
+            adapter._keep_typing(CHANNEL, interval=2.0, stop_event=stop_event)
+        )
+        try:
+            await asyncio.sleep(1.6)
+            websocket.send.assert_not_awaited()
+        finally:
+            adapter._typing_lock.release()
+
+        await asyncio.wait_for(task, timeout=1.0)
+        websocket.send.assert_awaited_once()
+        assert adapter._typing_websocket is websocket
+        websocket.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_send_typing_rejection_is_best_effort_and_closes_socket(self):
         adapter = _make_adapter()
         websocket = AsyncMock()

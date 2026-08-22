@@ -5104,7 +5104,7 @@ class BasePlatformAdapter(ABC):
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
 
-        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
+        Each ``send_typing`` call is bounded by a ~1.5s timeout by default so a slow
         network round-trip can't stall the refresh cadence.  Telegram- and
         Discord-side typing expire after ~5s; if any individual send_typing
         takes longer than the refresh interval, the bubble would die and
@@ -5114,9 +5114,12 @@ class BasePlatformAdapter(ABC):
         stays visible across provider stalls / upstream API timeouts.
         """
         # Bound each send_typing round-trip so the refresh cadence isn't
-        # gated on network health.  Must stay below ``interval`` so a slow
-        # call gets abandoned before the next scheduled tick.
-        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # gated on network health. Most adapters use the sub-interval default;
+        # connection-oriented transports may opt into a larger startup budget.
+        _default_timeout = max(0.25, min(1.5, interval - 0.25))
+        _send_typing_timeout = max(
+            0.25, float(getattr(self, "_typing_send_timeout", _default_timeout))
+        )
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
