@@ -4028,6 +4028,14 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+async def _publish_activity_best_effort(publish_activity, envelope, timeout=2.0):
+    """Publish one activity frame without allowing telemetry to delay a turn."""
+    try:
+        await asyncio.wait_for(publish_activity(envelope), timeout=timeout)
+    except Exception as error:
+        logger.debug("Activity telemetry publish failed: %s", error)
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -19676,10 +19684,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "startedAt": _activity_started_at,
                 "payload": payload or {},
             }
-            try:
-                await asyncio.wait_for(_publish_activity(envelope), timeout=2.0)
-            except Exception as error:
-                logger.debug("Activity telemetry publish failed: %s", error)
+            await _publish_activity_best_effort(_publish_activity, envelope)
 
         try:
             # Emit agent:start hook
@@ -27882,7 +27887,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "payload": {"toolCallId": call_id, "toolName": tool_name, **payload},
                 }
                 future = safe_schedule_threadsafe(
-                    _turn_publish_activity(envelope), _turn_loop, logger=logger
+                    _publish_activity_best_effort(_turn_publish_activity, envelope),
+                    _turn_loop,
+                    logger=logger,
                 )
                 if future is not None:
                     turn_ctx.activity_futures.append(future)

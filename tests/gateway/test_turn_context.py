@@ -54,6 +54,26 @@ class TestTurnContext:
 
 
 class TestTurnRunner:
+    @pytest.mark.asyncio
+    async def test_activity_publish_is_bounded_and_best_effort(self):
+        from gateway.run import _publish_activity_best_effort
+
+        cancelled = asyncio.Event()
+
+        async def _stuck_publish(_envelope):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        await _publish_activity_best_effort(
+            _stuck_publish,
+            {"kind": "tool_call"},
+            timeout=0.01,
+        )
+
+        assert cancelled.is_set()
+
     def test_tool_failure_progress_marks_activity_call(self):
         ctx = TurnContext()
         runner = _make_runner(ctx)
